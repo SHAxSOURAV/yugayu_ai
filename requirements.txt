@@ -1,0 +1,19 @@
+# ML / NLP
+kagglehub
+transformers
+torch
+sentencepiece
+accelerate
+sentence_transformers
+
+# API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+
+# Data
+pandas
+numpy
+
+# Database
+pymongo>=4.6.0
