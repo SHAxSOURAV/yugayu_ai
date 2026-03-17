@@ -75,6 +75,11 @@ class _State:
     recommender_error: Optional[str] = None
     recommend_safe_foods           = None   # callable
 
+    # Meal symptom forecast (pre-emptive prediction for uneaten meal)
+    meal_forecast_ready: bool          = False
+    meal_forecast_error: Optional[str] = None
+    forecast_meal_symptoms             = None   # callable
+
 _state = _State()
 
 
@@ -121,10 +126,13 @@ async def lifespan(app: FastAPI):
     try:
         from database import db as _mongo_db, MongoUserMemoryStore
         from user_symptom_memory import auto_update_from_logs
+        import user_symptom_memory as _usm
         _mongo_db.connect()
         _state.memory_store          = MongoUserMemoryStore()
         _state.auto_update_from_logs = auto_update_from_logs
         _state._mongo_db             = _mongo_db    # attach for endpoint use
+        # Patch the module-level singleton so any direct callers also hit MongoDB
+        _usm.user_memory_store       = _state.memory_store
         log.info("MongoDB connected. MongoUserMemoryStore ready.")
     except Exception as exc:
         log.warning(f"MongoDB unavailable ({exc}) — falling back to in-memory store.")
@@ -152,6 +160,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _state.recommender_error = str(exc)
         log.error(f"Food recommender failed: {exc}")
+
+    log.info("Loading meal symptom forecast module...")
+    try:
+        import meal_symptom_forecast as _msf
+        _state.forecast_meal_symptoms = _msf.forecast_meal_symptoms
+        _state.meal_forecast_ready    = True
+        log.info("Meal symptom forecast ready (reuses cross-encoder NLI — no extra RAM).")
+    except Exception as exc:
+        _state.meal_forecast_error = str(exc)
+        log.error(f"Meal symptom forecast failed to load: {exc}")
 
     yield
     log.info("Shutdown.")
@@ -902,11 +920,154 @@ def food_lookup(usda_id: int) -> FoodLookupResponse:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
-#  ENDPOINT 7 ── POST /predict/food-symptom
+#  ENDPOINT 7 ── GET /food/tags/{usda_id}
+#  USDA food ID → meal category tags
+#  Tags: Dairy | Gluten | Spicy | Fried | Sugar | Caffeine | Processed Food | Others
+#
+#  Uses DeBERTa-v3-base zero-shot NLI (reused from nutrition_scorer — no extra RAM)
+#  plus nutrient-based heuristic boosts for higher accuracy.
+# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TagScoreOut(BaseModel):
+    tag:              str
+    score:            float = Field(..., description="Final confidence score 0–1 (NLI + heuristic)")
+    nli_score:        float = Field(..., description="Raw DeBERTa NLI score before heuristic boosts")
+    heuristic_boost:  float = Field(..., description="Total boost applied by nutrient rules")
+    active:           bool  = Field(..., description="True if score ≥ 0.35 threshold")
+    reasons:          List[str] = Field(..., description="Explanation of how this score was reached")
+
+
+class FoodTagResponse(BaseModel):
+    usda_id:              int
+    food_description:     str
+    primary_tag:          str   = Field(
+        ..., description="Highest-confidence tag. 'Others' if nothing cleared the threshold."
+    )
+    active_tags:          List[str] = Field(
+        ..., description="All tags that cleared the 0.35 confidence threshold."
+    )
+    tag_scores:           List[TagScoreOut] = Field(
+        ..., description="Full score breakdown for every tag, sorted highest first."
+    )
+    confidence:           float = Field(..., description="Primary tag confidence (0–1)")
+    is_others:            bool  = Field(..., description="True when no specific tag was matched.")
+    classification_method:str   = Field(
+        ..., description="'nli+heuristic' | 'heuristic_only'"
+    )
+    note:                 str
+
+
+@app.get(
+    "/food/tags/{usda_id}",
+    response_model = FoodTagResponse,
+    summary        = "Classify a USDA food ID into meal category tags",
+)
+def food_tags(usda_id: int) -> FoodTagResponse:
+    """
+    Classifies a USDA food into one or more **meal category tags**.
+
+    **Available tags:**
+    `Dairy` · `Gluten` · `Spicy` · `Fried` · `Sugar` · `Caffeine` · `Processed Food` · `Others`
+
+    A food can have **multiple active tags** (e.g. a cheesy pizza → Dairy + Gluten + Processed Food).
+    `Others` is assigned only when no tag clears the 0.35 confidence threshold.
+
+    ---
+
+    ### How classification works
+
+    **Layer 1 — DeBERTa NLI (zero-shot)**
+    The USDA food description is the NLI premise.
+    Each tag is expressed as a natural-language hypothesis, e.g.:
+    - `"Dairy"` → *"This food is a dairy product or contains milk, cheese, cream, yogurt, or butter."*
+    - `"Fried"` → *"This food is fried, deep-fried, or cooked by submerging in hot oil."*
+
+    The DeBERTa model already loaded by the nutrition scorer is **reused — no extra RAM or startup cost.**
+
+    **Layer 2 — Nutrient heuristic boosts**
+    Hard rules adjust scores using USDA nutrient values, for example:
+    - Calcium ≥ 150 mg/100g → Dairy score +0.20
+    - Sugar ≥ 20 g/100g → Sugar score +0.15
+    - Sodium ≥ 400 mg/100g → Processed Food score +0.15
+
+    Final score = NLI score + heuristic boost, clamped to [0, 1].
+
+    ---
+
+    ### Example responses
+    ```
+    GET /food/tags/1009  (Butter, salted)
+    → primary_tag: "Dairy"
+    → active_tags: ["Dairy", "Processed Food"]
+
+    GET /food/tags/11819  (Pepper, hot chili)
+    → primary_tag: "Spicy"
+    → active_tags: ["Spicy"]
+
+    GET /food/tags/19335  (Sugars, granulated)
+    → primary_tag: "Sugar"
+    → active_tags: ["Sugar"]
+    ```
+
+    Get a `usda_id` from `POST /food/parse` or `POST /food/text-to-id`.
+    """
+    if not _state.usda_ready:
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail      = f"USDA dataset unavailable. Error: {_state.usda_error or 'unknown'}",
+        )
+
+    try:
+        from food_tag_classifier import classify_food_tags
+        result = classify_food_tags(
+            usda_id  = usda_id,
+            usda_df  = _state.usda_df,
+            id_col   = _state.id_col,
+            desc_col = _state.desc_col,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail      = str(exc),
+        )
+    except Exception as exc:
+        log.exception(f"food_tags classification failed for usda_id={usda_id}")
+        raise HTTPException(
+            status_code = 500,
+            detail      = f"Classification error: {exc}",
+        )
+
+    return FoodTagResponse(
+        usda_id               = result.usda_id,
+        food_description      = result.food_description,
+        primary_tag           = result.primary_tag,
+        active_tags           = result.active_tags,
+        tag_scores            = [
+            TagScoreOut(
+                tag             = ts.tag,
+                score           = ts.score,
+                nli_score       = ts.nli_score,
+                heuristic_boost = ts.heuristic_boost,
+                active          = ts.active,
+                reasons         = ts.reasons,
+            )
+            for ts in result.tag_scores
+        ],
+        confidence            = result.confidence,
+        is_others             = result.is_others,
+        classification_method = result.classification_method,
+        note                  = result.note,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  ENDPOINT 8 ── POST /predict/food-symptom
 #  Given recent food logs + symptom logs for a user,
 #  predict which food(s) most likely caused each symptom.
 # ══════════════════════════════════════════════════════════════════════════════
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────════════════════════════════
 
 from food_symptom_predictor import (
     FoodLogEntry,
@@ -1146,7 +1307,12 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
     # Auto-update Bayesian priors from this log session (learning happens here)
     if _state.auto_update_from_logs is not None and _state.memory_store is not None:
         try:
-            _state.auto_update_from_logs(user_id, food_entries, symptom_entries)
+            _state.auto_update_from_logs(
+                user_id,
+                food_entries,
+                symptom_entries,
+                store=_state.memory_store,   # ← explicitly use the active persistent store
+            )
         except Exception as exc:
             log.warning(f"Memory auto-update failed (non-fatal): {exc}")
 
@@ -1783,3 +1949,290 @@ def db_health():
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  ENDPOINT 13 — POST /predict/meal-symptom-forecast
+#
+#  The user provides a meal they HAVEN'T eaten yet (USDA IDs + quantities).
+#  The API pulls their full food + symptom log history from MongoDB (≤ 400 each),
+#  builds their personal Bayesian sensitivity profile, then predicts which of
+#  the 10 gut symptoms they are at risk of triggering — before they eat.
+#
+#  Model: cross-encoder/nli-deberta-v3-small (reused from food_symptom_predictor)
+#  No extra RAM. No extra startup cost.
+# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+
+from meal_symptom_forecast import ProposedFoodItem
+
+
+# ── Request / response models ─────────────────────────────────────────────────
+
+class ProposedFoodIn(BaseModel):
+    usda_id:    int   = Field(
+        ...,
+        description="USDA food ID. Get from POST /food/parse or POST /food/text-to-id.",
+    )
+    quantity_g: float = Field(
+        ..., gt=0,
+        description="Portion size in grams. Convert cups/pieces/ml to grams before sending.",
+        examples=[200.0, 150.0, 100.0],
+    )
+
+
+class FoodScoreBreakdown(BaseModel):
+    usda_id:             int
+    food_name:           str
+    quantity_g:          float
+    nli_entailment:      float = Field(..., description="NLI model confidence this food causes the symptom (0–1)")
+    nutrient_risk_score: float = Field(..., description="Nutrient-based risk score for this symptom (0–1)")
+    quantity_weight:     float = Field(..., description="Portion size weight (0–1)")
+    base_score:          float = Field(..., description="Score without personalisation")
+    personalised_score:  float = Field(..., description="Final score after Bayesian prior blend")
+    personal_prior:      float = Field(..., description="User's learned probability for this food→symptom pair")
+    prior_confidence:    float = Field(..., description="How much history backs the personal prior (0–1)")
+    prior_observations:  int   = Field(..., description="Number of co-occurrence observations logged")
+    top_risk_nutrients:  List[str] = Field(..., description="Nutrients contributing most to this symptom risk")
+
+
+class MealSymptomForecastOut(BaseModel):
+    symptom:              str
+    risk_score:           float = Field(..., description="Aggregated risk score across the full meal (0–1)")
+    risk_level:           str   = Field(..., description="'High' (≥0.60) | 'Medium' (≥0.38) | 'Low'")
+    risk_pct:             str   = Field(..., description="Human-readable score, e.g. '72%'")
+    top_trigger_food:     str   = Field(..., description="Food in the meal most likely to cause this symptom")
+    top_trigger_usda_id:  int
+    top_trigger_score:    float = Field(..., description="That food's individual contribution score")
+    top_risk_nutrients:   List[str]
+    per_food_scores:      List[FoodScoreBreakdown]
+    personalised:         bool  = Field(..., description="True if user history was used to personalise scores")
+    explanation:          str
+
+
+class MealForecastRequest(BaseModel):
+    user_id: str = Field(
+        ...,
+        description=(
+            "User identifier. Used to pull their food + symptom log history "
+            "from MongoDB (up to 400 entries each) to personalise predictions."
+        ),
+    )
+    proposed_foods: List[ProposedFoodIn] = Field(
+        ..., min_length=1, max_length=20,
+        description=(
+            "The hypothetical meal to evaluate. Pass 1–20 food items with USDA IDs and "
+            "portion sizes in grams. Use POST /food/text-to-id to convert food names to IDs."
+        ),
+    )
+
+
+class MealForecastResponse(BaseModel):
+    user_id:                  str
+    proposed_foods_count:     int   = Field(..., description="Number of food items evaluated")
+    food_logs_used:           int   = Field(..., description="User's food log entries pulled from MongoDB")
+    symptom_logs_used:        int   = Field(..., description="User's symptom log entries pulled from MongoDB")
+    personalised:             bool  = Field(..., description="True if personal history influenced predictions")
+    personalisation_weight:   float = Field(..., description="Weight given to personal data vs model (0–1)")
+    high_risk_symptoms:       List[str] = Field(..., description="Symptoms with risk_level = 'High'")
+    medium_risk_symptoms:     List[str] = Field(..., description="Symptoms with risk_level = 'Medium'")
+    forecasts:                List[MealSymptomForecastOut] = Field(
+        ..., description="All 10 symptoms ranked by risk score (highest first)"
+    )
+    evaluated_at:             str
+
+
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+@app.post(
+    "/predict/meal-symptom-forecast",
+    response_model = MealForecastResponse,
+    summary        = "Predict which symptoms a hypothetical uneaten meal might cause",
+)
+def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
+    """
+    **Before eating, check if a meal is safe for your gut.**
+
+    Provide a meal you're planning to eat (USDA food IDs + portion sizes).
+    The API analyses your personal gut history from MongoDB and predicts
+    which of the 10 gut symptoms you are at risk of triggering.
+
+    ---
+
+    ### How personalisation works
+
+    The system pulls up to **400 food logs** and **400 symptom logs** from
+    MongoDB for this user. These are used to build a personal Bayesian sensitivity
+    profile — how often a specific food appeared in a digestion window before a
+    specific symptom for THIS user. New users get generic NLI-model predictions.
+    Users with 30+ logs get 75% weight on their personal history.
+
+    | Total logs | Personal weight | Model weight |
+    |------------|-----------------|--------------|
+    | 0–4        | 20%             | 80%          |
+    | 5–14       | 40%             | 60%          |
+    | 15–29      | 60%             | 40%          |
+    | 30+        | 75%             | 25%          |
+
+    ---
+
+    ### Scoring formula (per food × per symptom)
+    ```
+    base_score = 0.45 × NLI entailment + 0.45 × nutrient_risk + 0.10 × quantity_weight
+    ```
+    - **NLI entailment** — cross-encoder/nli-deberta-v3-small reads:
+      - Premise: *"The person ate [food] containing [nutrients]"*
+      - Hypothesis: *"Eating this food caused [symptom] (moderate intensity)"*
+    - **Nutrient risk** — domain rules: e.g. high fat + sodium = Heartburn risk
+    - **Quantity weight** — larger portions contribute more risk
+    - **Personal prior** — blended in via Bayesian weight schedule above
+
+    Multi-food aggregation: `max(weighted_avg_by_portion, 0.85 × max_single_food_score)`
+
+    ---
+
+    ### Risk levels
+    | Score  | Level  |
+    |--------|--------|
+    | ≥ 0.60 | High   |
+    | ≥ 0.38 | Medium |
+    | < 0.38 | Low    |
+
+    ---
+
+    ### Workflow
+    ```
+    1. User types: "I'm thinking of eating fried chicken with white rice"
+       → POST /food/text-to-id  →  get USDA IDs
+
+    2. Check if it's safe:
+       → POST /predict/meal-symptom-forecast {
+           "user_id": "u123",
+           "proposed_foods": [
+             { "usda_id": 5064, "quantity_g": 300 },
+             { "usda_id": 20050, "quantity_g": 200 }
+           ]
+         }
+
+    3. Response shows: Heartburn HIGH 74%, Acid Reflux HIGH 69%, Bloating MEDIUM 51%
+       → Warn the user before they eat
+    ```
+
+    ---
+
+    ### Difference from other prediction endpoints
+    | Endpoint | When | Needs symptom logs |
+    |---|---|---|
+    | `/predict/meal-symptom-forecast` | Before eating | ❌ No |
+    | `/predict/symptom-risk/{user_id}` | After eating (from DB) | ❌ No |
+    | `/predict/food-symptom` | After eating + felt symptom | ✅ Yes |
+    """
+    # ── Guards ────────────────────────────────────────────────────────────────
+    if not _state.meal_forecast_ready:
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail      = f"Meal forecast unavailable: {_state.meal_forecast_error or 'unknown'}",
+        )
+    if not _state.usda_ready:
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail      = "USDA dataset unavailable.",
+        )
+
+    mongo = getattr(_state, "_mongo_db", None)
+    if mongo is None:
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail      = "MongoDB not connected — user history unavailable.",
+        )
+
+    # ── Pull user history from MongoDB (max 400 each) ─────────────────────────
+    try:
+        # 400 food logs covers ~57 days at 7 logs/day — sufficient for full history
+        food_logs    = mongo.get_food_logs(req.user_id,    days=90, limit=400)
+        symptom_logs = mongo.get_symptom_logs(req.user_id, days=90, limit=400)
+    except Exception as exc:
+        log.exception(f"MongoDB fetch failed for user={req.user_id!r}")
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+
+    # ── Load Bayesian memory built from that history ───────────────────────────
+    user_memory   = None
+    p_weight      = 0.20
+    is_personalised = False
+
+    if _state.memory_store is not None:
+        try:
+            user_memory     = _state.memory_store.load(req.user_id)
+            p_weight        = getattr(user_memory, "personalisation_weight", 0.20)
+            is_personalised = getattr(user_memory, "total_food_logs", 0) > 0
+        except Exception as exc:
+            log.warning(f"Memory load failed for {req.user_id!r} (non-fatal): {exc}")
+
+    # ── Convert request foods to internal data objects ────────────────────────
+    proposed = [
+        ProposedFoodItem(usda_id=f.usda_id, quantity_g=f.quantity_g)
+        for f in req.proposed_foods
+    ]
+
+    # ── Run forecast ──────────────────────────────────────────────────────────
+    try:
+        raw_forecasts = _state.forecast_meal_symptoms(
+            proposed_foods = proposed,
+            usda_df        = _state.usda_df,
+            id_col         = _state.id_col,
+            desc_col       = _state.desc_col,
+            user_memory    = user_memory,
+        )
+    except Exception as exc:
+        log.exception(f"Meal forecast failed for user={req.user_id!r}")
+        raise HTTPException(status_code=500, detail=f"Forecast error: {exc}")
+
+    # ── Build response ─────────────────────────────────────────────────────────
+    high_risk   = [f.symptom for f in raw_forecasts if f.risk_level == "High"]
+    medium_risk = [f.symptom for f in raw_forecasts if f.risk_level == "Medium"]
+
+    forecasts_out = [
+        MealSymptomForecastOut(
+            symptom             = f.symptom,
+            risk_score          = f.risk_score,
+            risk_level          = f.risk_level,
+            risk_pct            = f.risk_pct,
+            top_trigger_food    = f.top_trigger_food,
+            top_trigger_usda_id = f.top_trigger_usda_id,
+            top_trigger_score   = f.top_trigger_score,
+            top_risk_nutrients  = f.top_risk_nutrients,
+            per_food_scores     = [
+                FoodScoreBreakdown(
+                    usda_id             = s.usda_id,
+                    food_name           = s.food_name,
+                    quantity_g          = s.quantity_g,
+                    nli_entailment      = s.nli_entailment,
+                    nutrient_risk_score = s.nutrient_risk_score,
+                    quantity_weight     = s.quantity_weight,
+                    base_score          = s.base_score,
+                    personalised_score  = s.personalised_score,
+                    personal_prior      = s.personal_prior,
+                    prior_confidence    = s.prior_confidence,
+                    prior_observations  = s.prior_observations,
+                    top_risk_nutrients  = s.top_risk_nutrients,
+                )
+                for s in f.per_food_scores
+            ],
+            personalised  = f.personalised,
+            explanation   = f.explanation,
+        )
+        for f in raw_forecasts
+    ]
+
+    return MealForecastResponse(
+        user_id                = req.user_id,
+        proposed_foods_count   = len(req.proposed_foods),
+        food_logs_used         = len(food_logs),
+        symptom_logs_used      = len(symptom_logs),
+        personalised           = is_personalised,
+        personalisation_weight = round(p_weight, 2),
+        high_risk_symptoms     = high_risk,
+        medium_risk_symptoms   = medium_risk,
+        forecasts              = forecasts_out,
+        evaluated_at           = datetime.now(timezone.utc).isoformat(),
+    )

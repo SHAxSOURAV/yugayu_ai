@@ -396,8 +396,9 @@ from food_symptom_predictor import SYMPTOM_WINDOWS
 
 def auto_update_from_logs(
     user_id:      str,
-    food_logs:    list,    # list[FoodLogEntry]
-    symptom_logs: list,    # list[SymptomLogEntry]
+    food_logs:    list,              # list[FoodLogEntry]
+    symptom_logs: list,              # list[SymptomLogEntry]
+    store:        "UserMemoryStore | None" = None,  # inject the active store
 ) -> UserMemory:
     """
     Automatically update the user's Bayesian priors from today's logs.
@@ -407,8 +408,15 @@ def auto_update_from_logs(
       - Foods NOT in window but logged that day → record_cooccurrence(occurred=False, strength=0.3)
 
     This runs every time POST /predict/food-symptom is called — no extra action needed.
+
+    Args:
+        store: Pass the active UserMemoryStore (e.g. MongoUserMemoryStore from _state).
+               Defaults to the module-level in-memory singleton when None — useful for
+               tests and standalone scripts, but callers with a persistent store MUST
+               pass it explicitly so updates survive a server restart.
     """
-    memory = user_memory_store.load(user_id)
+    _store = store if store is not None else user_memory_store
+    memory = _store.load(user_id)
     memory.increment_food_logs(len(food_logs))
     memory.increment_symptom_logs(len(symptom_logs))
 
@@ -435,7 +443,7 @@ def auto_update_from_logs(
                 # Food was eaten that day but outside window — weak negative evidence
                 memory.record_cooccurrence(food.usda_id, symptom, occurred=False, strength=0.3)
 
-    user_memory_store.save(memory)
+    _store.save(memory)
     log.info(
         f"Auto-updated memory for user {user_id}: "
         f"{memory.total_food_logs} food logs, "
