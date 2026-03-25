@@ -2325,3 +2325,40 @@ def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
         forecasts              = forecasts_out,
         evaluated_at           = datetime.now(timezone.utc).isoformat(),
     )
+
+
+from scanner import fetch_product
+
+
+class BarcodeRequest(BaseModel):
+    code: str
+
+
+class BarcodeResponse(BaseModel):
+    barcode: str
+    product_name: str
+    quantity: Optional[str]
+
+
+@app.post("/scan/barcode", response_model=BarcodeResponse)
+def scan_barcode(req: BarcodeRequest):
+
+    code = req.code.strip()
+
+    try:
+        product = fetch_product(code)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return BarcodeResponse(
+        barcode=code,
+        product_name=product["name"],
+        quantity=product.get("quantity")
+    )
+
+@app.post("/debug/barcode")
+def debug_barcode(req: BarcodeRequest):
+    import requests
+    url = f"https://world.openfoodfacts.org/api/v0/product/{req.code}.json"
+    res = requests.get(url)
+    return res.json()
