@@ -33,6 +33,11 @@ import os
 import glob
 
 import kagglehub
+from text_context_parser import (
+    parse_meal_type,
+    parse_quantity_for_entity,
+    utc_now_iso,
+)
 import numpy as np
 import pandas as pd
 from transformers import (
@@ -256,7 +261,7 @@ def match_usda(normalised_name: str, top_k: int = 3) -> list[dict]:
 
 def text_to_usda(text: str, top_k: int = 3) -> list[dict]:
     """
-    Natural text → USDA food ID + description.
+    Natural text → USDA food ID + description + context (meal type, quantity, unit, logged_at).
 
     Input : any meal description string
     Output: list of dicts (one per detected food):
@@ -265,14 +270,14 @@ def text_to_usda(text: str, top_k: int = 3) -> list[dict]:
           "raw_food"        : "oatmeal",
           "ner_confidence"  : 0.9871,
           "normalised_name" : "Oatmeal, cooked, with no added fat",
-          "usda_id"         : 8121,            ← real USDA ID from dataset
+          "usda_id"         : 8121,
           "usda_description": "OATMEAL,INST,FORT,PLAIN,PREP W/WATER",
           "usda_similarity" : 0.8934,
-          "usda_top_matches": [                ← top_k candidates
-              {"rank":1, "usda_id":8121, "usda_description":"...", "similarity":0.89},
-              {"rank":2, "usda_id":8126, "usda_description":"...", "similarity":0.85},
-              {"rank":3, "usda_id":8003, "usda_description":"...", "similarity":0.82},
-          ]
+          "usda_top_matches": [...],
+          "meal_type"       : "Breakfast" | "Lunch" | "Dinner" | "Snack" | null,
+          "quantity"        : 200.0 | null,
+          "unit"            : "g" | "cup" | ... | null,
+          "logged_at"       : "2025-07-14T08:23:11Z",   ← UTC ISO-8601
         }
     """
     entities = extract_food_entities(text)
@@ -280,12 +285,19 @@ def text_to_usda(text: str, top_k: int = 3) -> list[dict]:
         print("  No food entities detected.")
         return []
 
+    # Parse context once for the full text
+    meal_type  = parse_meal_type(text)
+    logged_at  = utc_now_iso()
+
     results = []
     for ent in entities:
         raw_food   = ent["word"].strip()
-        normalised = normalise_to_usda_name(raw_food)   # Flan-T5
-        matches    = match_usda(normalised, top_k)       # SentenceTransformer
+        normalised = normalise_to_usda_name(raw_food)
+        matches    = match_usda(normalised, top_k)
         best       = matches[0]
+
+        # Quantity/unit scoped to this entity's character position in the text
+        quantity, unit = parse_quantity_for_entity(text, ent["start"], ent["end"])
 
         results.append({
             "raw_food":         raw_food,
@@ -295,6 +307,10 @@ def text_to_usda(text: str, top_k: int = 3) -> list[dict]:
             "usda_description": best["usda_description"],
             "usda_similarity":  best["similarity"],
             "usda_top_matches": matches,
+            "meal_type":        meal_type,
+            "quantity":         quantity,
+            "unit":             unit,
+            "logged_at":        logged_at,
         })
 
     return results

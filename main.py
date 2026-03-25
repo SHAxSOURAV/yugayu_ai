@@ -32,6 +32,7 @@ from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from scorer import DigestiveInput, DigestiveResult, calculate_score
+from text_context_parser import utc_now_iso
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -236,11 +237,36 @@ class DetectedFood(BaseModel):
     usda_description: str
     usda_similarity:  float
     usda_top_matches: List[USDAMatch]
+    # ── context fields ────────────────────────────────────────────────────────
+    meal_type: Optional[str] = Field(
+        None,
+        description="Meal type detected from text: Breakfast | Lunch | Dinner | Snack | null",
+    )
+    quantity: Optional[float] = Field(
+        None,
+        description="Numeric quantity found near this food in the text (e.g. 200).",
+    )
+    unit: Optional[str] = Field(
+        None,
+        description="Unit found near this food (e.g. 'g', 'cup', 'piece'). null when no unit present.",
+    )
+    logged_at: str = Field(
+        ...,
+        description="UTC ISO-8601 timestamp of when this parse was performed.",
+    )
 
 
 class FoodParseResponse(BaseModel):
     input_text:     str
     foods_detected: int
+    meal_type:      Optional[str] = Field(
+        None,
+        description="Meal type detected from the full text, or null if not mentioned.",
+    )
+    logged_at:      str = Field(
+        ...,
+        description="UTC ISO-8601 timestamp of the parse call.",
+    )
     results:        List[DetectedFood]
 
 
@@ -275,11 +301,23 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}")
 
     if not raw:
-        return FoodParseResponse(input_text=req.text, foods_detected=0, results=[])
+        return FoodParseResponse(
+            input_text     = req.text,
+            foods_detected = 0,
+            meal_type      = None,
+            logged_at      = utc_now_iso(),
+            results        = [],
+        )
+
+    # meal_type and logged_at are identical across all items — take from first result
+    meal_type = raw[0].get("meal_type")
+    logged_at = raw[0].get("logged_at", utc_now_iso())
 
     return FoodParseResponse(
         input_text     = req.text,
         foods_detected = len(raw),
+        meal_type      = meal_type,
+        logged_at      = logged_at,
         results = [
             DetectedFood(
                 raw_food         = r["raw_food"],
@@ -289,6 +327,10 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
                 usda_description = r["usda_description"],
                 usda_similarity  = r["usda_similarity"],
                 usda_top_matches = [USDAMatch(**m) for m in r["usda_top_matches"]],
+                meal_type        = r.get("meal_type"),
+                quantity         = r.get("quantity"),
+                unit             = r.get("unit"),
+                logged_at        = r.get("logged_at", logged_at),
             )
             for r in raw
         ],
@@ -708,17 +750,39 @@ class TextToIdRequest(BaseModel):
 
 
 class FoodIdItem(BaseModel):
-    raw_food:        str   = Field(..., description="Food word extracted from text by NER")
-    ner_confidence:  float = Field(..., description="NER model confidence 0–1")
-    normalised_name: str   = Field(..., description="USDA-style name produced by Flan-T5")
-    usda_id:         int   = Field(..., description="Best-match USDA food ID — use in /log/food or /food/lookup/{id}")
-    usda_description:str   = Field(..., description="Full USDA description for this ID")
-    similarity:      float = Field(..., description="Semantic similarity score 0–1")
+    raw_food:         str   = Field(..., description="Food word extracted from text by NER")
+    ner_confidence:   float = Field(..., description="NER model confidence 0–1")
+    normalised_name:  str   = Field(..., description="USDA-style name produced by Flan-T5")
+    usda_id:          int   = Field(..., description="Best-match USDA food ID — use in /log/food or /food/lookup/{id}")
+    usda_description: str   = Field(..., description="Full USDA description for this ID")
+    similarity:       float = Field(..., description="Semantic similarity score 0–1")
+    # ── context fields ────────────────────────────────────────────────────────
+    quantity: Optional[float] = Field(
+        None,
+        description="Numeric quantity found near this food in the text (e.g. 200). null if not mentioned.",
+    )
+    unit: Optional[str] = Field(
+        None,
+        description="Unit found near this food (e.g. 'g', 'cup', 'piece'). null when no unit present.",
+    )
 
 
 class TextToIdResponse(BaseModel):
     input_text:     str
     foods_detected: int
+    meal_type:      Optional[str] = Field(
+        None,
+        description="Meal type detected from the full text: Breakfast | Lunch | Dinner | Snack | null",
+    )
+    logged_at:      str = Field(
+        ...,
+        description="UTC ISO-8601 timestamp of when this parse was performed.",
+    )
+    food_list:      dict[str, str] = Field(
+        ...,
+        description='Quick lookup: raw food name → quantity string (e.g. {"salmon": "300g", "broccoli": "200g"}). '
+                    'Value is "Xunit" when both are present, "X" when quantity only, or "-" when neither.',
+    )
     foods:          List[FoodIdItem]
 
 
@@ -763,11 +827,34 @@ def food_text_to_id(req: TextToIdRequest) -> TextToIdResponse:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}")
 
     if not raw:
-        return TextToIdResponse(input_text=req.text, foods_detected=0, foods=[])
+        return TextToIdResponse(
+            input_text     = req.text,
+            foods_detected = 0,
+            meal_type      = None,
+            logged_at      = utc_now_iso(),
+            food_list      = {},
+            foods          = [],
+        )
+
+    meal_type = raw[0].get("meal_type")
+    logged_at = raw[0].get("logged_at", utc_now_iso())
+
+    def _qty_str(r: dict) -> str:
+        q, u = r.get("quantity"), r.get("unit")
+        if q is not None and u is not None:
+            return f"{int(q) if q == int(q) else q}{u}"
+        if q is not None:
+            return str(int(q) if q == int(q) else q)
+        return "-"
+
+    food_list = {r["raw_food"]: _qty_str(r) for r in raw}
 
     return TextToIdResponse(
         input_text     = req.text,
         foods_detected = len(raw),
+        meal_type      = meal_type,
+        logged_at      = logged_at,
+        food_list      = food_list,
         foods = [
             FoodIdItem(
                 raw_food         = r["raw_food"],
@@ -776,6 +863,8 @@ def food_text_to_id(req: TextToIdRequest) -> TextToIdResponse:
                 usda_id          = r["usda_id"],
                 usda_description = r["usda_description"],
                 similarity       = r["usda_similarity"],
+                quantity         = r.get("quantity"),
+                unit             = r.get("unit"),
             )
             for r in raw
         ],
