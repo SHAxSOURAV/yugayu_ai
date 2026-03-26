@@ -81,6 +81,9 @@ class _State:
     meal_forecast_error: Optional[str] = None
     forecast_meal_symptoms             = None   # callable
 
+    # Symptom note NLP analyser (reuses DeBERTa — no extra RAM)
+    analyse_symptom_note               = None   # callable
+
 _state = _State()
 
 
@@ -171,6 +174,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _state.meal_forecast_error = str(exc)
         log.error(f"Meal symptom forecast failed to load: {exc}")
+
+    log.info("Loading symptom note analyser...")
+    try:
+        import symptom_note_analyser as _sna
+        import nutrition_scorer as _ns_ref
+        _sna.init_classifier(_ns_ref._classifier)   # inject same DeBERTa — zero extra RAM
+        _state.analyse_symptom_note = _sna.analyse_symptom_note
+        log.info("Symptom note analyser ready (reuses DeBERTa — no extra RAM).")
+    except Exception as exc:
+        log.warning(f"Symptom note analyser failed to load ({exc}) — notes stored but not scored.")
+        _state.analyse_symptom_note = None
 
     yield
     log.info("Shutdown.")
@@ -592,7 +606,7 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENDPOINT 4 ── POST /log/symptom
-#  Log a symptom  →  updated score via severity + time-of-day
+#  Log one or more symptoms + optional free-text note → updated score
 # ══════════════════════════════════════════════════════════════════════════════
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -608,86 +622,163 @@ class SymptomLogRequest(BaseModel):
         ..., ge=0, le=100,
         description="User's current digestion score.",
     )
-    symptom: str = Field(
+    symptom: List[str] = Field(
         ...,
-        description="Symptom type.",
-        examples=["Bloating", "Heartburn", "Diarrhea"],
+        min_length=1,
+        description=(
+            "One or more symptoms to log simultaneously. "
+            "All share the same severity and timestamp."
+        ),
+        examples=[["Bloating", "Nausea"], ["Heartburn"]],
     )
     severity: str = Field(
         ...,
-        description="Severity of the symptom.",
+        description="Severity that applies to ALL listed symptoms.",
         examples=["Mild", "Moderate", "Severe"],
+    )
+    note: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Optional free-text description of how the user feels. "
+            "The system NLP-analyses this note using DeBERTa zero-shot classification to: "
+            "(1) detect any additional gut symptoms not explicitly listed — added at 50% penalty weight; "
+            "(2) flag novel symptoms outside the 10-label taxonomy (e.g. headache, dizziness) "
+            "with a small flat penalty and a descriptive hint."
+        ),
+        examples=["I also feel a strong headache and my stomach feels very tight"],
     )
     logged_at: Optional[datetime] = Field(
         default=None,
         description=(
-            "ISO 8601 datetime when the symptom occurred. "
-            "If omitted, server automatically uses the current UTC time."
+            "ISO 8601 datetime when the symptom(s) occurred. "
+            "If omitted, server uses current UTC time."
         ),
         examples=["2024-03-15T22:30:00"],
     )
 
 
+# ── Per-symptom breakdown row ─────────────────────────────────────────────────
+
+class SymptomDetail(BaseModel):
+    symptom:       str
+    score_penalty: int    = Field(..., description="Points deducted by this symptom (always ≤ 0)")
+    severity_note: str
+    time_note:     str
+    clinical_note: str
+    source:        str    = Field(
+        ...,
+        description="'user_logged' — explicitly submitted | 'note_detected' — inferred from note text",
+    )
+    confidence:    Optional[float] = Field(
+        None,
+        description="NLI confidence 0–1 for note-detected symptoms. null for user_logged.",
+    )
+
+
+# ── Note analysis block in the response ──────────────────────────────────────
+
+class NoteAnalysisOut(BaseModel):
+    analysed:               bool
+    detected_symptom_count: int
+    novel_symptom_flag:     bool
+    novel_symptom_hint:     str
+    additional_penalty:     int
+    analysis_summary:       str
+    raw_scores:             dict = Field(
+        default_factory=dict,
+        description="NLI score per symptom label from note analysis (0–1).",
+    )
+
+
 class SymptomLogResponse(BaseModel):
-    symptom:        str
-    severity:       str
-    logged_at:      str   = Field(..., description="ISO timestamp used for time-of-day scoring")
-    previous_score: int
-    score_penalty:  int   = Field(..., description="Points deducted (always negative)")
-    updated_score:  int
-    grade:          str
-    summary:        str
-    severity_note:  str
-    time_note:      str
-    clinical_note:  str
+    symptoms:            List[str]           = Field(..., description="All symptoms scored (user-logged + note-detected)")
+    severity:            str
+    logged_at:           str                 = Field(..., description="ISO timestamp used for time-of-day scoring")
+    previous_score:      int
+    score_penalty:       int                 = Field(..., description="Total points deducted across all symptoms")
+    updated_score:       int
+    grade:               str
+    summary:             str
+    per_symptom_details: List[SymptomDetail] = Field(..., description="Breakdown per symptom with individual penalties")
+    note_analysis:       Optional[NoteAnalysisOut] = Field(
+        None,
+        description="Present only when a note was provided.",
+    )
 
 
 @app.post("/log/symptom", response_model=SymptomLogResponse,
-          summary="Log a symptom and get an updated digestion score")
+          summary="Log one or more symptoms (+ optional note) and get an updated digestion score")
 def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
     """
-    Log a digestive symptom and get an **updated score**.
+    Log one or more digestive symptoms and get an **updated score**.
 
-    **How the score changes:**
-    - Each symptom has a clinical base penalty (e.g. Diarrhea = −12, Gas = −5)
+    ---
+
+    ### Multi-symptom support
+    Pass any number of symptoms in the `symptom` list — all share the same
+    `severity` and `logged_at`. Each symptom is scored independently and
+    all penalties are summed.
+
+    ```json
+    {
+      "current_score": 80,
+      "symptom": ["Bloating", "Nausea"],
+      "severity": "Moderate",
+      "logged_at": "2024-03-15T22:30:00"
+    }
+    ```
+
+    ---
+
+    ### Note-based symptom detection
+    Include a free-text `note` describing how the user feels.
+    The DeBERTa NLI model (already loaded, zero extra RAM) analyses the note to:
+
+    1. **Detect additional known symptoms** not explicitly listed.
+       e.g. note says *"stomach is cramping tight"* → `Cramps` detected,
+       added at **50% penalty weight** (inferred, not confirmed).
+
+    2. **Flag novel symptoms** outside the gut taxonomy (e.g. *"strong headache"*).
+       These get a small flat penalty (−3) and a descriptive `novel_symptom_hint`
+       so the frontend can surface them to the user.
+
+    ```json
+    {
+      "current_score": 80,
+      "symptom": ["Bloating"],
+      "severity": "Mild",
+      "note": "I also feel a strong headache and my stomach is cramping",
+      "logged_at": "2024-03-15T22:30:00"
+    }
+    ```
+
+    The response `per_symptom_details` marks each entry as
+    `user_logged` or `note_detected` so the frontend can display them differently.
+
+    ---
+
+    ### How the score changes (per symptom)
+    - Each symptom has a clinical base penalty (e.g. `Diarrhea` = −12, `Gas` = −5)
     - Severity multiplier: `Mild` × 0.5, `Moderate` × 1.0, `Severe` × 1.6
-    - Time-of-day multiplier: night symptoms (10 PM–6 AM) = × 1.25 (sleep disruption)
-    - Final penalty = base × severity × time-of-day, capped at −20 per entry
+    - Time-of-day multiplier: night (10 PM–6 AM) = × 1.25
+    - Note-detected symptoms: same formula but × 0.50 confidence weight
+    - Final `score_penalty` = sum of all individual symptom penalties
 
     **Allowed `symptom` values:**
     `Bloating` · `Abdominal Pain` · `Nausea` · `Constipation` · `Heartburn` ·
     `Gas` · `Fatigue` · `Acid Reflux` · `Cramps` · `Diarrhea`
 
     **Allowed `severity` values:** `Mild` · `Moderate` · `Severe`
-
-    **`logged_at` is optional** — if not provided, the server uses the current UTC time automatically.
-
-    ---
-    **Example — user reports severe heartburn at 11 PM:**
-    ```json
-    {
-      "current_score": 65,
-      "symptom": "Heartburn",
-      "severity": "Severe",
-      "logged_at": "2024-03-15T23:00:00"
-    }
-    ```
-    **Response:**
-    ```json
-    {
-      "score_penalty": -20,
-      "updated_score": 45,
-      "grade": "Fair",
-      "time_note": "Nighttime symptom — more significant, amplified by 1.25x",
-      "severity_note": "Severe symptoms are a significant gut health signal."
-    }
-    ```
     """
-    if req.symptom not in _VALID_SYMPTOMS:
+    # ── Validate every symptom in the list ───────────────────────────────────
+    invalid = [s for s in req.symptom if s not in _VALID_SYMPTOMS]
+    if invalid:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid symptom '{req.symptom}'. Allowed: {sorted(_VALID_SYMPTOMS)}",
+            detail=f"Invalid symptom(s): {invalid}. Allowed: {sorted(_VALID_SYMPTOMS)}",
         )
+
     if req.severity not in _VALID_SEVERITIES:
         raise HTTPException(
             status_code=422,
@@ -700,33 +791,135 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
             detail=f"Scorer unavailable. Error: {_state.nutrition_error or 'unknown'}",
         )
 
-    # Auto-detect time if not provided
+    # Deduplicate while preserving order
+    seen_syms: set[str] = set()
+    deduped: list[str] = []
+    for s in req.symptom:
+        if s not in seen_syms:
+            seen_syms.add(s)
+            deduped.append(s)
+
     logged_at = req.logged_at or datetime.now(timezone.utc)
 
-    try:
-        result = _state.analyse_symptom_log(
-            symptom   = req.symptom,
-            severity  = req.severity,
-            logged_at = logged_at,
-        )
-    except Exception as exc:
-        log.exception("Symptom log analysis failed")
-        raise HTTPException(status_code=500, detail=f"Analysis error: {exc}")
+    # ── Score each explicitly logged symptom ─────────────────────────────────
+    per_symptom_details: list[SymptomDetail] = []
+    total_penalty = 0
 
-    updated_score = max(0, min(100, req.current_score + result.score_penalty))
+    for sym in deduped:
+        try:
+            result = _state.analyse_symptom_log(
+                symptom   = sym,
+                severity  = req.severity,
+                logged_at = logged_at,
+            )
+        except Exception as exc:
+            log.exception(f"Symptom log analysis failed for {sym!r}")
+            raise HTTPException(status_code=500, detail=f"Analysis error for {sym!r}: {exc}")
+
+        total_penalty += result.score_penalty
+        per_symptom_details.append(SymptomDetail(
+            symptom       = result.symptom,
+            score_penalty = result.score_penalty,
+            severity_note = result.severity_note,
+            time_note     = result.time_note,
+            clinical_note = result.clinical_note,
+            source        = "user_logged",
+            confidence    = None,
+        ))
+
+    # ── Analyse the optional note ─────────────────────────────────────────────
+    note_analysis_out: Optional[NoteAnalysisOut] = None
+
+    if req.note and req.note.strip():
+        if _state.analyse_symptom_note is not None:
+            try:
+                note_result = _state.analyse_symptom_note(
+                    note_text      = req.note,
+                    already_logged = deduped,
+                    severity       = req.severity,
+                )
+
+                # Add note-detected symptoms to breakdown and score
+                for ds in note_result.detected_symptoms:
+                    total_penalty += ds.penalty
+                    deduped.append(ds.symptom)
+                    per_symptom_details.append(SymptomDetail(
+                        symptom       = ds.symptom,
+                        score_penalty = ds.penalty,
+                        severity_note = (
+                            f"Inferred from note at {ds.confidence:.0%} confidence. "
+                            f"Penalty reduced to 50% weight."
+                        ),
+                        time_note     = "Time-of-day multiplier not applied to note-inferred symptoms.",
+                        clinical_note = ds.note,
+                        source        = "note_detected",
+                        confidence    = ds.confidence,
+                    ))
+
+                # Novel-symptom flat penalty (total includes detected penalties already,
+                # so subtract them to avoid double-counting)
+                novel_penalty = (
+                    note_result.total_additional_penalty
+                    - sum(ds.penalty for ds in note_result.detected_symptoms)
+                )
+                total_penalty += novel_penalty
+
+                note_analysis_out = NoteAnalysisOut(
+                    analysed               = True,
+                    detected_symptom_count = len(note_result.detected_symptoms),
+                    novel_symptom_flag     = note_result.novel_symptom_flag,
+                    novel_symptom_hint     = note_result.novel_symptom_hint,
+                    additional_penalty     = note_result.total_additional_penalty,
+                    analysis_summary       = note_result.analysis_summary,
+                    raw_scores             = note_result.raw_scores,
+                )
+
+            except Exception as exc:
+                log.warning(f"Note analysis failed (non-fatal): {exc}")
+                note_analysis_out = NoteAnalysisOut(
+                    analysed               = False,
+                    detected_symptom_count = 0,
+                    novel_symptom_flag     = False,
+                    novel_symptom_hint     = "",
+                    additional_penalty     = 0,
+                    analysis_summary       = f"Note stored but analysis failed: {exc}",
+                    raw_scores             = {},
+                )
+        else:
+            # Analyser not loaded — acknowledge note without scoring it
+            note_analysis_out = NoteAnalysisOut(
+                analysed               = False,
+                detected_symptom_count = 0,
+                novel_symptom_flag     = False,
+                novel_symptom_hint     = "",
+                additional_penalty     = 0,
+                analysis_summary       = (
+                    "Note received and stored. "
+                    "NLP analyser not available — note was not scored."
+                ),
+                raw_scores             = {},
+            )
+
+    # ── Build final response ──────────────────────────────────────────────────
+    updated_score = max(0, min(100, req.current_score + total_penalty))
+
+    logged_at_str = (
+        logged_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if hasattr(logged_at, "strftime")
+        else str(logged_at)
+    )
 
     return SymptomLogResponse(
-        symptom        = result.symptom,
-        severity       = result.severity,
-        logged_at      = result.logged_at,
-        previous_score = req.current_score,
-        score_penalty  = result.score_penalty,
-        updated_score  = updated_score,
-        grade          = _grade(updated_score),
-        summary        = _grade_summary(updated_score),
-        severity_note  = result.severity_note,
-        time_note      = result.time_note,
-        clinical_note  = result.clinical_note,
+        symptoms             = deduped,
+        severity             = req.severity,
+        logged_at            = logged_at_str,
+        previous_score       = req.current_score,
+        score_penalty        = total_penalty,
+        updated_score        = updated_score,
+        grade                = _grade(updated_score),
+        summary              = _grade_summary(updated_score),
+        per_symptom_details  = per_symptom_details,
+        note_analysis        = note_analysis_out,
     )
 
 
@@ -2355,10 +2548,3 @@ def scan_barcode(req: BarcodeRequest):
         product_name=product["name"],
         quantity=product.get("quantity")
     )
-
-@app.post("/debug/barcode")
-def debug_barcode(req: BarcodeRequest):
-    import requests
-    url = f"https://world.openfoodfacts.org/api/v0/product/{req.code}.json"
-    res = requests.get(url)
-    return res.json()
