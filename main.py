@@ -34,6 +34,8 @@ from pydantic import BaseModel, Field
 from scorer import DigestiveInput, DigestiveResult, calculate_score
 from text_context_parser import utc_now_iso
 
+from culprit_food_finder import find_culprit_foods, CulpritResult, CulpritFood
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,9 @@ class _State:
 
     # Symptom note NLP analyser (reuses DeBERTa — no extra RAM)
     analyse_symptom_note               = None   # callable
+
+    # Culprit food cross-encoder (reused from food_symptom_predictor)
+    culprit_cross_encoder = None
 
 _state = _State()
 
@@ -186,9 +191,47 @@ async def lifespan(app: FastAPI):
         log.warning(f"Symptom note analyser failed to load ({exc}) — notes stored but not scored.")
         _state.analyse_symptom_note = None
 
+    log.info("Loading culprit food cross-encoder model...")
+    # ─────────────────────────────────────────────────────────────
+    # Culprit food model (ONLY ONE CLEAN BLOCK)
+    # ─────────────────────────────────────────────────────────────
+
+    log.info("Loading culprit food cross-encoder model...")
+
+    try:
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+        tokenizer = AutoTokenizer.from_pretrained("cross-encoder/nli-deberta-v3-small")
+        model = AutoModelForSequenceClassification.from_pretrained("cross-encoder/nli-deberta-v3-small")
+
+        class CrossEncoder:
+            def predict(self, pairs):
+                inputs = tokenizer(
+                    [p[0] for p in pairs],
+                    [p[1] for p in pairs],
+                    return_tensors="pt",
+                    truncation=True,
+                    padding=True,
+                    max_length=512
+                )
+                outputs = model(**inputs)
+                return outputs.logits.detach().tolist()
+
+        _state.culprit_cross_encoder = CrossEncoder()
+        log.info("✅ Culprit model loaded successfully")
+
+    except Exception as e:
+        _state.culprit_cross_encoder = None
+        log.error(f"❌ Failed to load culprit model: {e}")
+
+
+    # ─────────────────────────────────────────────────────────────
+    # IMPORTANT: KEEP THIS EXACTLY HERE
+    # ─────────────────────────────────────────────────────────────
     yield
     log.info("Shutdown.")
 
+    
 
 app = FastAPI(
     title    = "Gut Health API",
@@ -2547,4 +2590,102 @@ def scan_barcode(req: BarcodeRequest):
         barcode=code,
         product_name=product["name"],
         quantity=product.get("quantity")
+    )
+
+# ─────────────────────────────────────────────────────────────
+#  ENDPOINT 14 ── POST /culprit-foods
+#  Simple AI analysis → which foods caused symptoms
+# ─────────────────────────────────────────────────────────────
+
+class SimpleFoodLog(BaseModel):
+    usda_id: int
+    quantity_g: float
+    logged_at: datetime
+
+
+class SimpleSymptomLog(BaseModel):
+    symptom: str
+    severity: str = "Moderate"
+    logged_at: datetime
+
+
+class CulpritRequest(BaseModel):
+    food_logs: List[SimpleFoodLog]
+    symptom_logs: List[SimpleSymptomLog]
+
+
+class CulpritFoodOut(BaseModel):
+    usda_id: int
+    food_name: str
+    score: float
+    confidence: str
+    occurrence_count: int
+    linked_symptoms: List[str]
+    top_symptom: str
+
+
+class CulpritResponse(BaseModel):
+    total_foods: int
+    total_symptoms: int
+    culprit_foods: List[CulpritFoodOut]
+    summary: str
+
+
+@app.post("/culprit-foods", response_model=CulpritResponse,
+          summary="Find which foods most likely caused symptoms (NO user_id needed)")
+def culprit_foods(req: CulpritRequest) -> CulpritResponse:
+
+    if _state.culprit_cross_encoder is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Culprit model not loaded"
+        )
+
+    try:
+        food_logs = []
+
+        for f in req.food_logs:
+            df = _state.usda_df
+            id_col = _state.id_col
+            desc_col = _state.desc_col
+
+            row = df[df[id_col].astype(str) == str(f.usda_id)]
+
+            if row.empty:
+                food_name = "Unknown food"
+            else:
+                food_name = str(row.iloc[0][desc_col])
+
+            food_logs.append({
+                "usda_id": f.usda_id,
+                "usda_description": food_name,
+                "quantity_g": f.quantity_g,
+                "logged_at": f.logged_at
+            })
+
+        result = find_culprit_foods(
+            food_logs=food_logs,
+            symptom_logs=[s.dict() for s in req.symptom_logs],
+            cross_encoder=_state.culprit_cross_encoder
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return CulpritResponse(
+        total_foods=len(req.food_logs),
+        total_symptoms=len(req.symptom_logs),
+        culprit_foods=[
+            CulpritFoodOut(
+                usda_id=f.usda_id,
+                food_name=f.food_name,
+                score=f.aggregate_score,
+                confidence=f.confidence_label,
+                occurrence_count=f.occurrence_count,
+                linked_symptoms=f.linked_symptoms,
+                top_symptom=f.top_symptom
+            )
+            for f in result.culprit_foods
+        ],
+        summary=result.method_summary
     )
