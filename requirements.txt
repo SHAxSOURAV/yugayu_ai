@@ -1,19 +1,21 @@
-# ML / NLP
-kagglehub
-transformers
-torch
-sentencepiece
-accelerate
-sentence_transformers
-
 # API
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 
-# Data
-pandas
-numpy
+# AI
+anthropic>=0.30.0
+
+# HTTP (USDA FoodData Central API + OpenFoodFacts)
+httpx>=0.27.0
+requests>=2.31.0
 
 # Database
 pymongo>=4.6.0
+
+# Data (nutrient math only — no model embeddings)
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Config
+python-dotenv>=1.0.0

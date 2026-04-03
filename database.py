@@ -88,6 +88,10 @@ class _MongoClient:
         # user_memories: unique per user
         self._col("user_memories").create_index("user_id", unique=True)
 
+        # usda_cache: unique on fdc_id — O(1) cache lookups
+        # food_category stored here is used by POST /food/tags
+        self._col("usda_cache").create_index("fdc_id", unique=True)
+
         log.info("MongoDB indexes ensured.")
 
     # ══════════════════════════════════════════════════════════════════════════

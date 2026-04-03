@@ -1,357 +1,277 @@
-# ══════════════════════════════════════════════════════════════════════════════
-# Natural Text  →  USDA Food Name + USDA Food ID  Pipeline
-#
-# Model 1 — Dizex/InstaFoodRoBERTa-NER
-#   Extracts raw food words/phrases from any natural sentence.
-#
-# Model 2 — google/flan-t5-base
-#   Normalises the raw extracted food name into a clean USDA-style name.
-#
-# Model 3 — sentence-transformers/all-MiniLM-L6-v2
-#   Embeds the normalised name + all USDA descriptions to find the
-#   closest matching row → returns the real USDA ID.
-#
-# Dataset — demomaster/usda-national-nutrient-database  (via KaggleHub)
-#   Downloaded automatically on first run, cached locally after that.
-#
-# Install:
-#   pip install kagglehub transformers torch sentencepiece accelerate
-#   pip install sentence-transformers pandas numpy
-#
-# Kaggle credentials (one-time setup, choose either option):
-#   Option A — kaggle.json  (recommended)
-#     1. Go to https://www.kaggle.com/settings → API → "Create New Token"
-#     2. Move the downloaded file:  mv kaggle.json ~/.kaggle/kaggle.json
-#     3. Lock permissions:          chmod 600 ~/.kaggle/kaggle.json
-#
-#   Option B — environment variables
-#     export KAGGLE_USERNAME="your_kaggle_username"
-#     export KAGGLE_KEY="your_kaggle_api_key"
-# ══════════════════════════════════════════════════════════════════════════════
+"""
+food_text_to_usda.py
+────────────────────
+Natural Text → USDA Food ID pipeline.
 
-import os
-import glob
+Claude API handles:
+  • Food entity extraction with composite-dish decomposition
+  • USDA-style name normalisation
+  • Weight estimation (g) — per food, distributed for shared totals,
+    or estimated from standard serving sizes
+  • Meal type detection
 
-import kagglehub
-from text_context_parser import (
-    parse_meal_type,
-    parse_quantity_for_entity,
-    utc_now_iso,
-)
-import numpy as np
-import pandas as pd
-from transformers import (
-    AutoTokenizer,
-    AutoModelForTokenClassification,
-    T5Tokenizer,
-    T5ForConditionalGeneration,
-    pipeline,
-)
-from sentence_transformers import SentenceTransformer
+USDA FoodData Central REST API handles ID lookup.
+
+USDA search strategy (multi-attempt, never silently drops a food):
+  1. Full normalised name
+  2. Raw food phrase the user wrote
+  3. Individual meaningful keywords from the normalised name (longest first)
+  4. Last resort: main ingredient only
+
+Public API
+──────────
+    text_to_usda(text) -> list[dict]
+
+Each dict:
+    raw_food, normalised_name, usda_id, usda_description,
+    meal_type, weight_g, logged_at
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Optional
+
+from text_context_parser import utc_now_iso
+
+log = logging.getLogger(__name__)
+
+_claude_client = None
+_usda_client   = None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Download USDA dataset from Kaggle via KaggleHub
-#
-#   kagglehub.dataset_download() behaviour:
-#     • First run  → downloads dataset and caches it locally
-#     • Next runs  → returns the cached path instantly (no re-download)
-#     • New Kaggle version released → automatically re-downloads
-#
-#   Returns: local folder path containing the dataset files
-# ══════════════════════════════════════════════════════════════════════════════
-
-KAGGLE_DATASET = "demomaster/usda-national-nutrient-database"
-
-print(f"Step 1 | Downloading dataset: '{KAGGLE_DATASET}' ...")
-dataset_path = kagglehub.dataset_download(KAGGLE_DATASET)
-print(f"        Dataset path: {dataset_path}")
-
-# ── Auto-discover the CSV inside the downloaded folder ───────────────────────
-# kagglehub returns the root folder; we search recursively for CSV files.
-csv_files = glob.glob(os.path.join(dataset_path, "**", "*.csv"), recursive=True)
-
-if not csv_files:
-    raise FileNotFoundError(
-        f"No CSV file found inside: {dataset_path}\n"
-        f"Files present: {os.listdir(dataset_path)}"
-    )
-
-# If multiple CSVs exist, pick the largest one (most likely the main table)
-usda_csv_path = max(csv_files, key=os.path.getsize)
-print(f"        Using CSV : {os.path.basename(usda_csv_path)}")
-print(f"        Full path : {usda_csv_path}\n")
+def init(claude_client, usda_client) -> None:
+    global _claude_client, _usda_client
+    _claude_client = claude_client
+    _usda_client   = usda_client
+    log.info("food_text_to_usda: Claude + USDA client ready.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Load the CSV and pre-compute USDA embeddings
-#
-#   We embed all USDA food descriptions once at startup so every
-#   query lookup is just a fast dot-product, not a full re-embed.
-# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — Claude: extract + decompose + normalise + weight in one call
+# ─────────────────────────────────────────────────────────────────────────────
 
-print("Step 2 | Loading USDA CSV ...")
-usda_df = pd.read_csv(usda_csv_path)
-usda_df.columns = [c.strip() for c in usda_df.columns]   # strip whitespace
+_EXTRACT_SYSTEM = """\
+You are a clinical nutrition assistant that parses meal descriptions for a \
+gut health tracking app. The app stores foods using USDA FoodData Central IDs, \
+so every food you return must be searchable in the USDA database.
 
-# Resolve ID column (handles different naming conventions across datasets)
-_id_col = next(
-    (c for c in usda_df.columns if c.upper() in ("ID", "FDC_ID", "FOOD_ID", "NDB_NO")),
-    usda_df.columns[0],   # fallback: first column
-)
+Given a user's meal text, return a JSON object with exactly two keys:
 
-# Resolve Description column
-_desc_col = next(
-    (c for c in usda_df.columns if c.upper() in ("DESCRIPTION", "DESC", "FOOD_NAME", "LONG_DESC", "NAME")),
-    usda_df.columns[1],   # fallback: second column
-)
+1. "meal_type": one of "Breakfast", "Lunch", "Dinner", "Snack", or null.
+   Detect from context words like "breakfast", "lunch", "dinner", "morning",
+   "noon", "tonight", "snack", etc.
 
-print(f"        Rows     : {len(usda_df):,}")
-print(f"        ID col   : '{_id_col}'")
-print(f"        Desc col : '{_desc_col}'")
-print(f"        Columns  : {list(usda_df.columns)}\n")
+2. "foods": a JSON array. Each element:
+   {
+     "word":       <the food phrase as written by the user>,
+     "normalised": <USDA-searchable food name — see rules below>,
+     "weight_g":   <weight in grams as a positive number>
+   }
 
-print("Step 2 | Embedding USDA descriptions with SentenceTransformer ...")
-st_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+NORMALISATION RULES:
+- Use USDA FoodData Central naming conventions:
+    Good: "Rice, white, long-grain, cooked"
+    Good: "Chicken, broiler, breast, cooked, roasted"
+    Bad:  "chicken biryani"  (USDA does not index ethnic dish names)
+- For COMPOSITE or ETHNIC dishes (biryani, fried rice, pasta bake, curry,
+  stew, soup, sandwich, burger, pilaf, etc.) ALWAYS decompose into individual
+  USDA-searchable ingredient foods. Do NOT return the dish name as-is.
+  Example — "chicken biriyani 400g":
+    { "word": "chicken biriyani", "normalised": "Chicken, broiler or fryer, breast, meat only, cooked, roasted", "weight_g": 160 }
+    { "word": "chicken biriyani", "normalised": "Rice, white, long-grain, cooked",                                "weight_g": 200 }
+    { "word": "chicken biriyani", "normalised": "Oil, vegetable",                                                 "weight_g": 20  }
+    { "word": "chicken biriyani", "normalised": "Onions, raw",                                                    "weight_g": 20  }
+  Example — "egg fried rice":
+    { "word": "egg fried rice", "normalised": "Rice, white, long-grain, cooked", "weight_g": 200 }
+    { "word": "egg fried rice", "normalised": "Egg, whole, cooked, fried",       "weight_g": 60  }
+    { "word": "egg fried rice", "normalised": "Oil, vegetable",                  "weight_g": 10  }
+- For simple whole foods (apple, oatmeal, grilled chicken) return directly.
 
-usda_descriptions = usda_df[_desc_col].fillna("").tolist()
-usda_embeddings   = st_model.encode(
-    usda_descriptions,
-    batch_size           = 256,
-    show_progress_bar    = True,
-    normalize_embeddings = True,   # unit vectors → dot product = cosine sim
-    convert_to_tensor    = True,
-)
-print("        USDA embeddings ready.\n")
+WEIGHT RULES (apply in order):
+  a. User states a weight for a specific food — use it exactly.
+  b. User states a TOTAL weight for a dish — decompose, then distribute the
+     stated total across components in realistic proportions.
+     Component weights MUST sum to the stated total.
+  c. No weight mentioned — estimate a realistic adult single-serving weight
+     per component based on standard dietary guidelines.
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Load InstaFoodRoBERTa-NER
-#
-#   Fine-tuned RoBERTa that detects FOOD entity spans in informal text
-#   (social media captions, casual meal descriptions, etc.)
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("Step 3 | Loading InstaFoodRoBERTa-NER ...")
-
-ner_tokenizer = AutoTokenizer.from_pretrained("Dizex/InstaFoodRoBERTa-NER")
-ner_model     = AutoModelForTokenClassification.from_pretrained("Dizex/InstaFoodRoBERTa-NER")
-
-# aggregation_strategy="simple" → merges sub-word tokens back into full words
-# e.g. ["oat", "##meal"] → "oatmeal"
-ner_pipe = pipeline(
-    "ner",
-    model                = ner_model,
-    tokenizer            = ner_tokenizer,
-    aggregation_strategy = "simple",
-)
-print("        NER model ready.\n")
+OUTPUT RULES:
+  - weight_g must always be a positive number (never 0 or null).
+  - Return ONLY the JSON object — no markdown, no extra text.
+  - If no food is found, return: {"meal_type": null, "foods": []}
+"""
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — Load Flan-T5-base
-#
-#   Instruction-finetuned T5 used zero-shot to normalise informal food
-#   names into clean USDA-style names via a simple text prompt.
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("Step 4 | Loading Flan-T5-base ...")
-
-t5_tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
-t5_model     = T5ForConditionalGeneration.from_pretrained("google/flan-t5-base")
-
-print("        Flan-T5 ready.\n")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Helper A — Extract food entities from raw text  (NER stage)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def extract_food_entities(text: str) -> list[dict]:
+def _extract_entities(text: str) -> tuple[Optional[str], list[dict]]:
     """
-    Run InstaFoodRoBERTa-NER on text.
-    Returns list of { word, start, end, score }.
+    Single Claude call → (meal_type, [{word, normalised, weight_g}, ...])
 
-    Adjacent FOOD spans (within 1 char) are merged so that multi-word
-    foods like "grilled chicken breast" come back as one entity.
+    For composite dishes Claude decomposes them into individual USDA-searchable
+    components, so the foods list may be longer than the number of items the
+    user explicitly mentioned.
     """
-    raw = ner_pipe(text)
+    if _claude_client is None:
+        log.error("Claude client not initialised.")
+        return None, []
 
-    merged: list[dict] = []
-    for ent in raw:
-        if ent["entity_group"] != "FOOD":
-            continue
-        if merged and ent["start"] - merged[-1]["end"] <= 1:
-            merged[-1]["end"]   = ent["end"]
-            merged[-1]["word"]  = text[merged[-1]["start"]: ent["end"]]
-            merged[-1]["score"] = (merged[-1]["score"] + ent["score"]) / 2
-        else:
-            merged.append({
-                "word":  ent["word"],
-                "start": ent["start"],
-                "end":   ent["end"],
-                "score": ent["score"],
-            })
+    try:
+        msg = _claude_client.messages.create(
+            model      = "claude-sonnet-4-6",
+            max_tokens = 800,
+            system     = _EXTRACT_SYSTEM,
+            messages   = [{"role": "user", "content": text}],
+        )
+        raw = msg.content[0].text.strip()
 
-    return [e for e in merged if e["word"].strip()]
+        # Strip markdown fences if Claude adds them despite instructions
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        data      = json.loads(raw)
+        meal_type = data.get("meal_type")
+        foods     = [
+            f for f in data.get("foods", [])
+            if isinstance(f, dict) and f.get("word") and f.get("weight_g")
+        ]
+        return meal_type, foods
+
+    except Exception as exc:
+        log.warning(f"Claude entity extraction failed: {exc}")
+        return None, []
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Helper B — Normalise informal name → USDA-style name  (Flan-T5 stage)
-# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — USDA: multi-attempt search, never silently drops a food
+# ─────────────────────────────────────────────────────────────────────────────
 
-def normalise_to_usda_name(raw_food: str) -> str:
+# Stop-words that are not useful as standalone USDA search terms
+_SEARCH_STOPWORDS = {
+    "cooked", "raw", "whole", "with", "and", "or", "the", "a", "an",
+    "by", "for", "in", "on", "of", "to", "from", "dried", "fresh",
+    "prepared", "added", "without", "salt", "heat", "dry",
+}
+
+
+def _usda_search_attempts(normalised: str, raw_food: str) -> list[str]:
     """
-    Zero-shot prompt asking Flan-T5 to rewrite an informal food name
-    in USDA database format.
-
-    "oatmeal"         → "Oatmeal, cooked, with no added fat"
-    "grilled chicken" → "Chicken, broilers or fryers, breast, cooked, roasted"
-    "banana"          → "Bananas, raw"
+    Build a ranked list of search query candidates to try against USDA.
+    Returns queries ordered from most specific → least specific.
     """
-    prompt = (
-        "Convert the informal food name below into a standard USDA food "
-        "database name. Return only the standardised name, nothing else.\n\n"
-        f"Informal food name: {raw_food}\n"
-        "Standard USDA name:"
-    )
+    candidates: list[str] = []
 
-    inputs  = t5_tokenizer(prompt, return_tensors="pt")
-    outputs = t5_model.generate(
-        **inputs,
-        max_new_tokens = 40,
-        num_beams      = 4,
-        early_stopping = True,
-    )
-    return t5_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+    # 1. Full normalised USDA name
+    candidates.append(normalised)
 
+    # 2. Raw phrase the user typed (if different)
+    if raw_food.lower() != normalised.lower():
+        candidates.append(raw_food)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Helper C — Match normalised name → USDA row  (SentenceTransformer stage)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def match_usda(normalised_name: str, top_k: int = 3) -> list[dict]:
-    """
-    Cosine-similarity search over pre-computed USDA embeddings.
-    Returns top_k matches: { rank, usda_id, usda_description, similarity }
-    """
-    q_emb = st_model.encode(
-        normalised_name,
-        normalize_embeddings = True,
-        convert_to_tensor    = True,
-    )
-
-    sims    = (usda_embeddings @ q_emb).cpu().numpy()
-    top_idx = np.argsort(sims)[::-1][:top_k]
-
-    return [
-        {
-            "rank":             rank,
-            "usda_id":          int(usda_df.iloc[idx][_id_col]),
-            "usda_description": str(usda_df.iloc[idx][_desc_col]),
-            "similarity":       round(float(sims[idx]), 4),
-        }
-        for rank, idx in enumerate(top_idx, 1)
+    # 3. Meaningful individual words from the normalised name (longest first,
+    #    skip stop-words and very short tokens)
+    words = [
+        w.strip(",.") for w in normalised.replace(",", " ").split()
+        if len(w.strip(",.")) > 3 and w.strip(",.").lower() not in _SEARCH_STOPWORDS
     ]
+    words.sort(key=len, reverse=True)
+    for w in words[:4]:           # try up to 4 individual keywords
+        if w not in candidates:
+            candidates.append(w)
+
+    # 4. First two meaningful words combined (e.g. "Chicken breast")
+    if len(words) >= 2:
+        combo = f"{words[0]} {words[1]}"
+        if combo not in candidates:
+            candidates.append(combo)
+
+    return candidates
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — Full end-to-end pipeline
-# ══════════════════════════════════════════════════════════════════════════════
-
-def text_to_usda(text: str, top_k: int = 3) -> list[dict]:
+def _find_usda_match(normalised: str, raw_food: str) -> Optional[dict]:
     """
-    Natural text → USDA food ID + description + context (meal type, quantity, unit, logged_at).
-
-    Input : any meal description string
-    Output: list of dicts (one per detected food):
-
-        {
-          "raw_food"        : "oatmeal",
-          "ner_confidence"  : 0.9871,
-          "normalised_name" : "Oatmeal, cooked, with no added fat",
-          "usda_id"         : 8121,
-          "usda_description": "OATMEAL,INST,FORT,PLAIN,PREP W/WATER",
-          "usda_similarity" : 0.8934,
-          "usda_top_matches": [...],
-          "meal_type"       : "Breakfast" | "Lunch" | "Dinner" | "Snack" | null,
-          "quantity"        : 200.0 | null,
-          "unit"            : "g" | "cup" | ... | null,
-          "logged_at"       : "2025-07-14T08:23:11Z",   ← UTC ISO-8601
-        }
+    Try multiple USDA search queries in order.
+    Returns the first successful match dict, or None when all attempts fail.
     """
-    entities = extract_food_entities(text)
+    for query in _usda_search_attempts(normalised, raw_food):
+        matches = _usda_client.search(query, top_k=1)
+        if matches:
+            log.debug(
+                f"USDA matched '{raw_food}' via query='{query}' "
+                f"→ {matches[0]['usda_description']}"
+            )
+            return matches[0]
+
+    log.warning(
+        f"USDA: no match found for '{raw_food}' / '{normalised}' after all attempts."
+    )
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public function
+# ─────────────────────────────────────────────────────────────────────────────
+
+def text_to_usda(text: str) -> list[dict]:
+    """
+    Natural meal text → list of USDA food records with weight_g.
+
+    Composite/ethnic dishes are automatically decomposed into individual
+    USDA-searchable components by Claude. Each component gets a USDA ID
+    via multi-attempt search.
+
+    Returns list of dicts:
+        raw_food, normalised_name, usda_id, usda_description,
+        meal_type, weight_g, logged_at
+    """
+    if _claude_client is None or _usda_client is None:
+        raise RuntimeError("food_text_to_usda not initialised. Call init() first.")
+
+    meal_type, entities = _extract_entities(text)
+
     if not entities:
-        print("  No food entities detected.")
+        log.info("No food entities detected in text.")
         return []
 
-    # Parse context once for the full text
-    meal_type  = parse_meal_type(text)
-    logged_at  = utc_now_iso()
+    logged_at = utc_now_iso()
+    results: list[dict] = []
 
-    results = []
     for ent in entities:
-        raw_food   = ent["word"].strip()
-        normalised = normalise_to_usda_name(raw_food)
-        matches    = match_usda(normalised, top_k)
-        best       = matches[0]
+        raw_food   = ent.get("word", "").strip()
+        normalised = ent.get("normalised", raw_food)
+        weight_g   = float(ent.get("weight_g", 0))
 
-        # Quantity/unit scoped to this entity's character position in the text
-        quantity, unit = parse_quantity_for_entity(text, ent["start"], ent["end"])
+        if not raw_food or weight_g <= 0:
+            continue
+
+        best = _find_usda_match(normalised, raw_food)
+
+        if best is None:
+            # Still include the food — log a warning but never silently drop it.
+            # usda_id=0 signals an unmatched food to the caller.
+            log.warning(f"Including '{raw_food}' with usda_id=0 (no USDA match).")
+            results.append({
+                "raw_food":         raw_food,
+                "normalised_name":  normalised,
+                "usda_id":          0,
+                "usda_description": normalised,
+                "meal_type":        meal_type,
+                "weight_g":         round(weight_g, 1),
+                "logged_at":        logged_at,
+            })
+            continue
 
         results.append({
             "raw_food":         raw_food,
-            "ner_confidence":   round(ent["score"], 4),
             "normalised_name":  normalised,
             "usda_id":          best["usda_id"],
             "usda_description": best["usda_description"],
-            "usda_similarity":  best["similarity"],
-            "usda_top_matches": matches,
             "meal_type":        meal_type,
-            "quantity":         quantity,
-            "unit":             unit,
+            "weight_g":         round(weight_g, 1),
             "logged_at":        logged_at,
         })
 
     return results
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 6 — Run examples
-# ══════════════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-
-    test_inputs = [
-        "I had a big bowl of oatmeal with banana for breakfast",
-        "Lunch was grilled chicken breast with brown rice and broccoli",
-        "Just ate some Greek yogurt and blueberries as a snack",
-        "Tonight I had spaghetti with tomato sauce and garlic bread",
-        "200g salmon fillet with mashed potatoes and green beans",
-    ]
-
-    for text in test_inputs:
-        print(f"\n{'=' * 70}")
-        print(f"Input : {text}")
-        print('=' * 70)
-
-        results = text_to_usda(text, top_k=3)
-
-        for r in results:
-            print(
-                f"\n  Raw food        : {r['raw_food']}\n"
-                f"  NER confidence  : {r['ner_confidence']:.2%}\n"
-                f"  Normalised name : {r['normalised_name']}\n"
-                f"  ── Best USDA match ──────────────────────────────\n"
-                f"  USDA ID         : {r['usda_id']}\n"
-                f"  USDA Description: {r['usda_description']}\n"
-                f"  USDA Similarity : {r['usda_similarity']:.2%}\n"
-                f"  ── Other candidates ─────────────────────────────"
-            )
-            for m in r["usda_top_matches"][1:]:
-                print(
-                    f"    #{m['rank']}  "
-                    f"ID {m['usda_id']:>6}  "
-                    f"({m['similarity']:.2%})  "
-                    f"{m['usda_description']}"
-                )

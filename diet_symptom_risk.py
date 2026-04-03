@@ -1,50 +1,37 @@
 """
 diet_symptom_risk.py
 ────────────────────
-Predicts gut symptom probabilities from a user's stored food log history
-using zero-shot NLI (MoritzLaurer/deberta-v3-base-mnli-fever-anli).
+Predicts gut symptom probabilities from a user's food log history.
 
-The classifier is the SAME instance already loaded by nutrition_scorer.py —
-no extra RAM, no extra startup cost.
+Old approach: DeBERTa zero-shot NLI pipeline (requires loaded model).
+New approach: Claude API (one batched call for all 10 symptoms).
 
-Public API
-──────────
-    predict_symptom_risk(food_logs, classifier) -> list[dict]
-
-Each returned dict:
-    {
-        "symptom":     str,
-        "probability": float,   # 0–1 independent sigmoid score
-        "risk_level":  str,     # "high" | "medium" | "low"
-    }
-
-Sorted highest probability first.
+Public API (unchanged):
+    predict_symptom_risk(food_logs) -> (diet_summary, list[dict])
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
+log = logging.getLogger(__name__)
 
-# ── Symptom taxonomy — must match _VALID_SYMPTOMS in main.py ─────────────────
+_claude_client = None
+
+
+def init(claude_client) -> None:
+    global _claude_client
+    _claude_client = claude_client
+    log.info("diet_symptom_risk: Claude client ready.")
+
+
 SYMPTOM_LABELS = [
-    "Bloating",
-    "Gas",
-    "Constipation",
-    "Diarrhea",
-    "Nausea",
-    "Heartburn",
-    "Abdominal Pain",
-    "Cramps",
-    "Fatigue",
-    "Acid Reflux",
+    "Bloating", "Gas", "Constipation", "Diarrhea", "Nausea",
+    "Heartburn", "Abdominal Pain", "Cramps", "Fatigue", "Acid Reflux",
 ]
 
-# Hypothesis template: each label is substituted into {}
-# Framed as a clinical NLI hypothesis the model scores against the diet premise
-_HYPOTHESIS_TEMPLATE = "This diet is likely to cause {}."
-
-# Risk bucketing
 _RISK_THRESHOLDS: list[tuple[str, float]] = [
     ("high",   0.55),
     ("medium", 0.35),
@@ -52,47 +39,19 @@ _RISK_THRESHOLDS: list[tuple[str, float]] = [
 ]
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
 def _build_diet_summary(food_logs: list[dict]) -> str:
-    """
-    Build a natural-language diet description from MongoDB food log dicts.
-
-    Expected keys per log entry (as stored by database.py):
-        usda_description : str   (e.g. "CHICKEN,BRST,CKD,RSTD")
-        quantity_g       : float
-        meal_type        : str   (Breakfast / Lunch / Dinner / Snack)
-        logged_at        : str   (ISO timestamp — used for ordering, not displayed)
-
-    Falls back gracefully when optional keys are missing.
-    """
     if not food_logs:
         return "The user has not logged any food recently."
-
-    # Group by meal_type for a more natural sentence
     meal_groups: dict[str, list[str]] = {}
     for entry in food_logs:
-        meal = (entry.get("meal_type") or "meal").strip().lower()
-        desc = entry.get("usda_description") or "unknown food"
-        qty  = entry.get("quantity_g")
-
-        # Humanise the USDA description: "CHICKEN,BRST,CKD,RSTD" → "chicken breast"
-        readable = _humanise(desc)
-
-        portion = f"{round(qty)}g {readable}" if qty else readable
+        meal    = (entry.get("meal_type") or "meal").strip().lower()
+        desc    = entry.get("usda_description") or "unknown food"
+        qty     = entry.get("quantity_g")
+        readable = desc.replace(",", " ").lower().strip()
+        portion  = f"{round(qty)}g {readable}" if qty else readable
         meal_groups.setdefault(meal, []).append(portion)
-
     parts = [f"{meal}: {', '.join(items)}" for meal, items in meal_groups.items()]
     return "The user recently consumed — " + "; ".join(parts) + "."
-
-
-def _humanise(usda_desc: str) -> str:
-    """
-    Convert USDA ALL-CAPS comma-separated description to a readable name.
-    e.g. "CHICKEN,BRST,CKD,RSTD" → "chicken brst ckd rstd"
-    e.g. "BUTTER,WITH SALT"       → "butter with salt"
-    """
-    return usda_desc.replace(",", " ").lower().strip()
 
 
 def _bucket_risk(probability: float) -> str:
@@ -102,54 +61,65 @@ def _bucket_risk(probability: float) -> str:
     return "low"
 
 
-# ── Main function ─────────────────────────────────────────────────────────────
+_RISK_SYSTEM = (
+    "You are a clinical gut-health AI. Given a diet summary, estimate the probability "
+    "(0.0–1.0) that each gut symptom will occur. "
+    "Return ONLY a JSON object (no markdown) with each symptom as a key and its "
+    "probability as the value. Symptoms: "
+    "Bloating, Gas, Constipation, Diarrhea, Nausea, Heartburn, Abdominal Pain, Cramps, Fatigue, Acid Reflux."
+)
+
 
 def predict_symptom_risk(
     food_logs:  list[dict],
-    classifier: Any,   # the transformers zero-shot-classification pipeline
+    classifier: Any = None,   # kept for API compatibility — not used
 ) -> tuple[str, list[dict]]:
     """
     Predict symptom probabilities from MongoDB food log records.
-
-    Parameters
-    ----------
-    food_logs   : list of dicts from db.get_food_logs() — may be empty
-    classifier  : the zero-shot-classification pipeline from nutrition_scorer._classifier
-
-    Returns
-    -------
-    (diet_summary, predictions)
-
-    predictions is a list of dicts sorted by probability (descending):
-        [{"symptom": str, "probability": float, "risk_level": str}, ...]
+    Returns (diet_summary, predictions_list).
     """
     diet_summary = _build_diet_summary(food_logs)
 
     if not food_logs:
-        # No logs — return neutral 0.0 scores for all symptoms
         return diet_summary, [
             {"symptom": s, "probability": 0.0, "risk_level": "low"}
             for s in SYMPTOM_LABELS
         ]
 
-    # multi_label=True → independent sigmoid per label (not softmax).
-    # This is correct: multiple symptoms can have elevated risk simultaneously.
-    result = classifier(
-        diet_summary,
-        candidate_labels    = SYMPTOM_LABELS,
-        hypothesis_template = _HYPOTHESIS_TEMPLATE,
-        multi_label         = True,
-    )
+    if _claude_client is None:
+        log.warning("diet_symptom_risk: Claude client not initialised. Returning neutral.")
+        return diet_summary, [
+            {"symptom": s, "probability": 0.0, "risk_level": "low"}
+            for s in SYMPTOM_LABELS
+        ]
 
-    # result["labels"] and result["scores"] are parallel lists,
-    # already sorted descending by score by the pipeline.
-    predictions = [
-        {
+    try:
+        msg = _claude_client.messages.create(
+            model      = "claude-sonnet-4-6",
+            max_tokens = 300,
+            system     = _RISK_SYSTEM,
+            messages   = [{"role": "user", "content": diet_summary}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1].lstrip("json").strip()
+        data = json.loads(raw)
+    except Exception as exc:
+        log.warning(f"Claude diet symptom risk failed: {exc}")
+        return diet_summary, [
+            {"symptom": s, "probability": 0.0, "risk_level": "low"}
+            for s in SYMPTOM_LABELS
+        ]
+
+    predictions = []
+    for label in SYMPTOM_LABELS:
+        prob = float(data.get(label, 0.0))
+        prob = max(0.0, min(1.0, prob))
+        predictions.append({
             "symptom":     label,
-            "probability": round(float(score), 4),
-            "risk_level":  _bucket_risk(float(score)),
-        }
-        for label, score in zip(result["labels"], result["scores"])
-    ]
+            "probability": round(prob, 4),
+            "risk_level":  _bucket_risk(prob),
+        })
 
+    predictions.sort(key=lambda x: x["probability"], reverse=True)
     return diet_summary, predictions
