@@ -260,99 +260,8 @@ def _grade_summary(score: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINT 1 — POST /food/parse
+# ENDPOINT 1 — POST /score
 # ─────────────────────────────────────────────────────────────────────────────
-
-class FoodParseRequest(BaseModel):
-    text:          str = Field(..., min_length=3, max_length=1000,
-                               examples=["I had eat 200g rice and egg fry in lunch"])
-    current_score: Optional[int] = Field(None, ge=0, le=100,
-                               description="Pass your current score to also get score_impact and updated_score")
-
-
-class FoodParseItem(BaseModel):
-    normalised_name: str
-    usda_id:         int
-    weight_g:        float
-
-
-class FoodParseResponse(BaseModel):
-    Food_detected:    int
-    Logged_at:        str
-    normalised_names: List[str]
-    results:          List[FoodParseItem]
-    meal_type:        Optional[str] = None
-    score_impact:     Optional[int] = None
-    updated_score:    Optional[int] = None
-    note:             Optional[str] = None
-
-
-@app.post(
-    "/food/parse",
-    response_model=FoodParseResponse,
-    summary="Parse natural meal text → USDA IDs + optional gut health score",
-    description=(
-        "Parse any meal description. Pass current_score to also receive "
-        "score_impact, updated_score, and a gut health note."
-    ),
-)
-def food_parse(req: FoodParseRequest) -> FoodParseResponse:
-    if not _state.usda_ready:
-        raise HTTPException(503, f"USDA pipeline unavailable: {_state.usda_error or 'unknown'}")
-    try:
-        raw = _state.text_to_usda(req.text)
-    except Exception as exc:
-        log.exception(f"food/parse pipeline error for: {req.text!r}")
-        raise HTTPException(500, f"Pipeline error: {exc}")
-
-    if not raw:
-        return FoodParseResponse(
-            Food_detected=0, Logged_at=utc_now_iso(),
-            normalised_names=[], results=[], meal_type=None,
-        )
-
-    logged_at        = raw[0].get("logged_at", utc_now_iso())
-    meal_type        = raw[0].get("meal_type")
-    normalised_names = [r["normalised_name"].split(",")[0].strip() for r in raw]
-
-    score_impact:  Optional[int] = None
-    updated_score: Optional[int] = None
-    note:          Optional[str] = None
-
-    if req.current_score is not None and _state.nutrition_ready:
-        try:
-            import nutrition_scorer as _ns
-            foods_for_scoring = [
-                {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
-                for r in raw
-            ]
-            raw_score, note = _ns.score_meal_claude(
-                foods=foods_for_scoring,
-                meal_type=meal_type or "Lunch",
-            )
-            score_impact  = _calculate_score_impact(raw_score, req.current_score)
-            updated_score = max(_SCORE_FLOOR, min(_SCORE_CEIL, req.current_score + score_impact))
-        except Exception as exc:
-            log.warning(f"food/parse scoring failed: {exc}")
-
-    return FoodParseResponse(
-        Food_detected    = len(raw),
-        Logged_at        = logged_at,
-        normalised_names = normalised_names,
-        results          = [
-            FoodParseItem(
-                normalised_name = r["normalised_name"].split(",")[0].strip(),
-                usda_id         = r["usda_id"],
-                weight_g        = r["weight_g"],
-            )
-            for r in raw
-        ],
-        meal_type     = meal_type,
-        score_impact  = score_impact,
-        updated_score = updated_score,
-        note          = note,
-    )
-
 
 # ENDPOINT 2 — POST /score
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,7 +270,6 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
           summary="Calculate onboarding digestion score (call once at onboarding)")
 def score(data: DigestiveInput) -> DigestiveResult:
     return calculate_score(data)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 3 — POST /log/food
@@ -494,8 +402,6 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
         meal_type = req.meal_type,
         note      = note,
     )
-
-
 # ENDPOINT 4 — POST /log/symptom
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -600,7 +506,99 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
         logged_at         = logged_at_str,
         note              = note_text,
     )
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 1 — POST /food/parse
+# ─────────────────────────────────────────────────────────────────────────────
 
+class FoodParseRequest(BaseModel):
+    text:          str = Field(..., min_length=3, max_length=1000,
+                               examples=["I had eat 200g rice and egg fry in lunch"])
+    current_score: Optional[int] = Field(None, ge=0, le=100,
+                               description="Pass your current score to also get score_impact and updated_score")
+
+
+class FoodParseItem(BaseModel):
+    normalised_name: str
+    usda_id:         int
+    weight_g:        float
+
+
+class FoodParseResponse(BaseModel):
+    Food_detected:    int
+    Logged_at:        str
+    normalised_names: List[str]
+    results:          List[FoodParseItem]
+    meal_type:        Optional[str] = None
+    score_impact:     Optional[int] = None
+    updated_score:    Optional[int] = None
+    note:             Optional[str] = None
+
+
+@app.post(
+    "/food/parse",
+    response_model=FoodParseResponse,
+    summary="Parse natural meal text → USDA IDs + optional gut health score",
+    description=(
+        "Parse any meal description. Pass current_score to also receive "
+        "score_impact, updated_score, and a gut health note."
+    ),
+)
+def food_parse(req: FoodParseRequest) -> FoodParseResponse:
+    if not _state.usda_ready:
+        raise HTTPException(503, f"USDA pipeline unavailable: {_state.usda_error or 'unknown'}")
+    try:
+        raw = _state.text_to_usda(req.text)
+    except Exception as exc:
+        log.exception(f"food/parse pipeline error for: {req.text!r}")
+        raise HTTPException(500, f"Pipeline error: {exc}")
+
+    if not raw:
+        return FoodParseResponse(
+            Food_detected=0, Logged_at=utc_now_iso(),
+            normalised_names=[], results=[], meal_type=None,
+        )
+
+    logged_at        = raw[0].get("logged_at", utc_now_iso())
+    meal_type        = raw[0].get("meal_type")
+    normalised_names = [r["normalised_name"].split(",")[0].strip() for r in raw]
+
+    score_impact:  Optional[int] = None
+    updated_score: Optional[int] = None
+    note:          Optional[str] = None
+
+    if req.current_score is not None and _state.nutrition_ready:
+        try:
+            import nutrition_scorer as _ns
+            foods_for_scoring = [
+                {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
+                for r in raw
+            ]
+            raw_score, note = _ns.score_meal_claude(
+                foods=foods_for_scoring,
+                meal_type=meal_type or "Lunch",
+            )
+            score_impact  = _calculate_score_impact(raw_score, req.current_score)
+            updated_score = max(_SCORE_FLOOR, min(_SCORE_CEIL, req.current_score + score_impact))
+        except Exception as exc:
+            log.warning(f"food/parse scoring failed: {exc}")
+
+    return FoodParseResponse(
+        Food_detected    = len(raw),
+        Logged_at        = logged_at,
+        normalised_names = normalised_names,
+        results          = [
+            FoodParseItem(
+                normalised_name = r["normalised_name"].split(",")[0].strip(),
+                usda_id         = r["usda_id"],
+                weight_g        = r["weight_g"],
+            )
+            for r in raw
+        ],
+        meal_type     = meal_type,
+        score_impact  = score_impact,
+        updated_score = updated_score,
+        note          = note,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
@@ -697,9 +695,6 @@ def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
     )
 
 # _____________________
-
-#
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 7 — POST /food/tags
@@ -926,6 +921,102 @@ def _normalise_intensity(raw: str) -> str:
  
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION A — ENDPOINT 8  POST /predict/food-symptom
+# ENDPOINT — POST /recommend/safe_food
+# ─────────────────────────────────────────────────────────────────────────────
+
+from food_recommender import recommend_safe_from_logs
+
+
+class SafeFoodRequest(BaseModel):
+    food_logs:    List[FoodLogInput]    = Field(..., min_length=1)
+    symptom_logs: List[SymptomLogInput] = Field(default_factory=list)
+    user_id:      Optional[str]         = None
+    n:            int                   = Field(default=5, ge=1, le=10)
+ 
+ 
+class SafeFoodResponse(BaseModel):
+    safe_foods:              List[str]
+    foods_analysed:          int
+    composite_meals_detected: int
+    symptoms_considered:     int
+    source_note:             str
+ 
+ 
+@app.post(
+    "/recommend/safe_food",
+    response_model=SafeFoodResponse,
+    summary="Get safe food recommendations based on your food and symptom history",
+    description=(
+        "Pass your food logs (usda_id + weight_g + logged_at) and symptom logs. "
+        "Foods logged at the same timestamp are grouped as composite meals. "
+        "Claude identifies which foods from your history did NOT trigger symptoms, "
+        "then fills remaining slots with new gut-friendly food suggestions. "
+        "Returns a list of 5 safe food names. "
+        "Intensity is case-insensitive. user_id is optional."
+    ),
+)
+def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
+ 
+    # ── Validate ──────────────────────────────────────────────────────────────
+    if not _state.recommender_ready:
+        raise HTTPException(503, f"Recommender unavailable: {_state.recommender_error or 'unknown'}")
+    if not _state.usda_ready:
+        raise HTTPException(503, "USDA client unavailable — cannot resolve food names.")
+ 
+    for sl in req.symptom_logs:
+        normalised = _normalise_intensity(sl.intensity)
+        if normalised not in _VALID_PREDICT_SEVERITIES:
+            raise HTTPException(
+                422,
+                f"Invalid intensity '{sl.intensity}'. "
+                f"Accepted: Mild, Moderate, Severe (case-insensitive).",
+            )
+ 
+    # ── Resolve usda_id → food names ─────────────────────────────────────────
+    food_logs_named = _resolve_food_logs(req.food_logs)
+ 
+    symptom_logs_plain = [
+        {
+            "symptom":   sl.symptom,
+            "intensity": _normalise_intensity(sl.intensity),
+            "logged_at": sl.logged_at,
+        }
+        for sl in req.symptom_logs
+    ]
+ 
+    # ── Count composites for metadata ─────────────────────────────────────────
+    grouped       = group_composite_meals(food_logs_named)
+    composite_cnt = sum(1 for m in grouped if m["is_composite"])
+ 
+    # ── Claude safe food recommendation ──────────────────────────────────────
+    try:
+        safe_foods = recommend_safe_from_logs(
+            food_logs_named = food_logs_named,
+            symptom_logs    = symptom_logs_plain,
+            n               = req.n,
+        )
+    except Exception as exc:
+        log.exception("recommend/safe-foods — recommendation failed")
+        raise HTTPException(500, f"Recommendation error: {exc}")
+ 
+    if not safe_foods:
+        raise HTTPException(404, "No safe food recommendations could be generated.")
+ 
+    source_note = (
+        "Recommendations generated by Claude AI. "
+        "Safe history foods are returned verbatim; "
+        "new suggestions are gut-friendly foods unlikely to trigger your reported symptoms."
+        + (f" {composite_cnt} composite meal(s) detected and grouped." if composite_cnt else "")
+    )
+ 
+    return SafeFoodResponse(
+        safe_foods               = safe_foods,
+        foods_analysed           = len(req.food_logs),
+        composite_meals_detected = composite_cnt,
+        symptoms_considered      = len(req.symptom_logs),
+        source_note              = source_note,
+    )
+ 
 # ══════════════════════════════════════════════════════════════════════════════
  
 class FoodSymptomPredictRequest(BaseModel):
@@ -949,9 +1040,9 @@ _VALID_PREDICT_SEVERITIES = {"Mild", "Moderate", "Severe"}
  
  
 @app.post(
-    "/predict/food-symptom",
+    "/recommend/risky_food",
     response_model=FoodSymptomPredictResponse,
-    summary="Predict which foods caused which symptoms using Claude temporal analysis",
+    summary="Predict which foods triggered which symptoms (risky food analysis)",
     description=(
         "Pass food logs (usda_id + weight_g + logged_at) and symptom logs "
         "(symptom + intensity + logged_at). Foods logged at the same timestamp "
@@ -1042,6 +1133,67 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
         evaluated_at             = datetime.now(timezone.utc).isoformat(),
     )
  
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/triggers_food
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TriggersFoodRequest(BaseModel):
+    symptom_name: str = Field(..., min_length=2, max_length=100,
+                               description="The gut symptom being investigated",
+                               examples=["Bloating"])
+    food_name:    List[str] = Field(..., min_length=1, max_length=20,
+                               description="Foods suspected of triggering this symptom",
+                               examples=[["Beans", "Onion", "Dairy"]])
+
+
+class TriggersFoodResponse(BaseModel):
+    symptom_name: str
+    trigger_foods: List[str]
+    insight:       str   # 2-line, 17-20 word Claude-generated summary
+
+
+_TRIGGERS_SYSTEM = (
+    "You are a clinical gut-health dietitian AI. "
+    "Given a symptom and a list of foods that trigger it, write exactly 1 lines "
+    "totalling 17-20 words. Be direct and clinical. No bullet points, no markdown, "
+    "no preamble. Return only the two lines of text, nothing else."
+)
+
+
+@app.post(
+    "/recommend/triggers_food",
+    response_model=TriggersFoodResponse,
+    summary="Get a 1-line AI insight about foods that trigger a specific symptom",
+)
+def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
+    if _state.claude_client is None:
+        raise HTTPException(503, "Claude client not available — check Claude_API_key in .env")
+
+    foods_str = ", ".join(req.food_name)
+    user_msg  = (
+        f"Symptom: {req.symptom_name}\n"
+        f"Trigger foods: {foods_str}"
+    )
+
+    try:
+        msg = _state.claude_client.messages.create(
+            model      = "claude-sonnet-4-6",
+            max_tokens = 60,
+            system     = _TRIGGERS_SYSTEM,
+            messages   = [{"role": "user", "content": user_msg}],
+        )
+        insight = msg.content[0].text.strip()
+    except Exception as exc:
+        log.exception("recommend/triggers_food — Claude call failed")
+        raise HTTPException(500, f"AI insight generation failed: {exc}")
+
+    return TriggersFoodResponse(
+        symptom_name  = req.symptom_name,
+        trigger_foods = req.food_name,
+        insight       = insight,
+    )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 9 — POST /predict/feedback
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1134,102 +1286,6 @@ def learning_summary(user_id: str) -> LearningSummaryResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINT 11 — POST /recommend/safe-foods
-# ─────────────────────────────────────────────────────────────────────────────
-
-from food_recommender import recommend_safe_from_logs
-
-
-class SafeFoodRequest(BaseModel):
-    food_logs:    List[FoodLogInput]    = Field(..., min_length=1)
-    symptom_logs: List[SymptomLogInput] = Field(default_factory=list)
-    user_id:      Optional[str]         = None
-    n:            int                   = Field(default=5, ge=1, le=10)
- 
- 
-class SafeFoodResponse(BaseModel):
-    safe_foods:              List[str]
-    foods_analysed:          int
-    composite_meals_detected: int
-    symptoms_considered:     int
-    source_note:             str
- 
- 
-@app.post(
-    "/recommend/safe-foods",
-    response_model=SafeFoodResponse,
-    summary="Get safe food recommendations based on your food and symptom history",
-    description=(
-        "Pass your food logs (usda_id + weight_g + logged_at) and symptom logs. "
-        "Foods logged at the same timestamp are grouped as composite meals. "
-        "Claude identifies which foods from your history did NOT trigger symptoms, "
-        "then fills remaining slots with new gut-friendly food suggestions. "
-        "Returns a list of 5 safe food names. "
-        "Intensity is case-insensitive. user_id is optional."
-    ),
-)
-def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
- 
-    # ── Validate ──────────────────────────────────────────────────────────────
-    if not _state.recommender_ready:
-        raise HTTPException(503, f"Recommender unavailable: {_state.recommender_error or 'unknown'}")
-    if not _state.usda_ready:
-        raise HTTPException(503, "USDA client unavailable — cannot resolve food names.")
- 
-    for sl in req.symptom_logs:
-        normalised = _normalise_intensity(sl.intensity)
-        if normalised not in _VALID_PREDICT_SEVERITIES:
-            raise HTTPException(
-                422,
-                f"Invalid intensity '{sl.intensity}'. "
-                f"Accepted: Mild, Moderate, Severe (case-insensitive).",
-            )
- 
-    # ── Resolve usda_id → food names ─────────────────────────────────────────
-    food_logs_named = _resolve_food_logs(req.food_logs)
- 
-    symptom_logs_plain = [
-        {
-            "symptom":   sl.symptom,
-            "intensity": _normalise_intensity(sl.intensity),
-            "logged_at": sl.logged_at,
-        }
-        for sl in req.symptom_logs
-    ]
- 
-    # ── Count composites for metadata ─────────────────────────────────────────
-    grouped       = group_composite_meals(food_logs_named)
-    composite_cnt = sum(1 for m in grouped if m["is_composite"])
- 
-    # ── Claude safe food recommendation ──────────────────────────────────────
-    try:
-        safe_foods = recommend_safe_from_logs(
-            food_logs_named = food_logs_named,
-            symptom_logs    = symptom_logs_plain,
-            n               = req.n,
-        )
-    except Exception as exc:
-        log.exception("recommend/safe-foods — recommendation failed")
-        raise HTTPException(500, f"Recommendation error: {exc}")
- 
-    if not safe_foods:
-        raise HTTPException(404, "No safe food recommendations could be generated.")
- 
-    source_note = (
-        "Recommendations generated by Claude AI. "
-        "Safe history foods are returned verbatim; "
-        "new suggestions are gut-friendly foods unlikely to trigger your reported symptoms."
-        + (f" {composite_cnt} composite meal(s) detected and grouped." if composite_cnt else "")
-    )
- 
-    return SafeFoodResponse(
-        safe_foods               = safe_foods,
-        foods_analysed           = len(req.food_logs),
-        composite_meals_detected = composite_cnt,
-        symptoms_considered      = len(req.symptom_logs),
-        source_note              = source_note,
-    )
- 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 12 — GET /user/{user_id}/dashboard
 # ─────────────────────────────────────────────────────────────────────────────
