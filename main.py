@@ -615,13 +615,19 @@ def _sf(v) -> Optional[float]:
         return None
 
 
+class FoodLookupInputItem(BaseModel):
+    usda_id:  int
+    weight_g: float = Field(..., gt=0, description="Portion weight in grams")
+
+
 class FoodLookupRequest(BaseModel):
-    usda_ids: List[int]
+    usda_ids: List[FoodLookupInputItem]
 
 
 class FoodLookupItem(BaseModel):
     usda_id:         int
     normalised_name: str
+    weight_g:        float
     calories:        Optional[float] = None
     carbohydrate:    Optional[float] = None
     protein:         Optional[float] = None
@@ -629,50 +635,65 @@ class FoodLookupItem(BaseModel):
 
 
 class FoodLookupResponse(BaseModel):
-    food_detected:        int
-    foods_macros:         List[FoodLookupItem]
-    total_calories:       int
-    total_carb:           int
-    total_protein:        int
-    total_fat:            int
+    food_detected:         int
+    foods_macros:          List[FoodLookupItem]
+    total_calories:        float
+    total_carb:            float
+    total_protein:         float
+    total_fat:             float
     total_normalised_name: str
+    total_weight_g:        float
 
 
 @app.post("/food/lookup", response_model=FoodLookupResponse,
-          summary="Lookup macros for one or multiple USDA IDs")
+          summary="Lookup macros for one or multiple USDA IDs, scaled to portion weight")
 def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
     if not _state.usda_ready:
         raise HTTPException(503, f"USDA dataset unavailable: {_state.usda_error or 'unknown'}")
+    if not req.usda_ids:
+        raise HTTPException(422, "usda_ids list is empty.")
 
     foods_macros: List[FoodLookupItem] = []
+    names: List[str] = []
 
-    for usda_id in req.usda_ids:
-        data = _state.usda_client.get_nutrients(usda_id)
+    for item in req.usda_ids:
+        data = _state.usda_client.get_nutrients(item.usda_id)
         if data is None:
-            continue
+            raise HTTPException(404, f"USDA ID {item.usda_id} not found.")
+
+        ratio = item.weight_g / 100.0
+
+        def _scale(key: str) -> Optional[float]:
+            val = _sf(data.get(key))
+            return round(val * ratio, 4) if val is not None else None
+
+        name = data.get("description", f"USDA ID {item.usda_id}")
+        names.append(name)
+
         foods_macros.append(
             FoodLookupItem(
-                usda_id         = usda_id,
-                normalised_name = data.get("description", f"USDA ID {usda_id}"),
-                calories        = _sf(data.get("calories")),
-                carbohydrate    = _sf(data.get("carbs")),
-                protein         = _sf(data.get("protein")),
-                fat             = _sf(data.get("total_fat")),
+                usda_id         = item.usda_id,
+                normalised_name = name,
+                weight_g        = item.weight_g,
+                calories        = _scale("calories"),
+                carbohydrate    = _scale("carbs"),
+                protein         = _scale("protein"),
+                fat             = _scale("total_fat"),
             )
         )
 
-    total_normalised_name = " ".join(
-        item.normalised_name.split()[0] for item in foods_macros
-    )
+    total_weight_g = round(sum(i.weight_g for i in foods_macros), 1)
+    total_normalised_name = ", ".join(n.split()[0] for n in names) + f" — {total_weight_g} g"
 
     return FoodLookupResponse(
         food_detected         = len(foods_macros),
         foods_macros          = foods_macros,
-        total_calories        = int(sum(i.calories    or 0.0 for i in foods_macros)),
-        total_carb            = int(sum(i.carbohydrate or 0.0 for i in foods_macros)),
-        total_protein         = int(sum(i.protein      or 0.0 for i in foods_macros)),
-        total_fat             = int(sum(i.fat          or 0.0 for i in foods_macros)),
+        total_calories        = round(sum(i.calories     or 0.0 for i in foods_macros), 4),
+        total_carb            = round(sum(i.carbohydrate or 0.0 for i in foods_macros), 4),
+        total_protein         = round(sum(i.protein      or 0.0 for i in foods_macros), 4),
+        total_fat             = round(sum(i.fat          or 0.0 for i in foods_macros), 4),
         total_normalised_name = total_normalised_name,
+        total_weight_g        = total_weight_g,
     )
 
 # _____________________
