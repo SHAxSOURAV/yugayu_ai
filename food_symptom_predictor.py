@@ -172,12 +172,43 @@ def _keyword_risk_score(food_name: str, symptom: str) -> float:
     """
     Returns a 0-1 risk score for a food name → symptom pair
     based purely on keyword matching.  0.0 means no keyword matched.
+
+    A safe-food keyword (empty dict, e.g. "sweet potato" -> {}) suppresses a
+    risky keyword ONLY when the safe keyword contains the risky keyword as a
+    sub-string — meaning the safe keyword is the more specific description.
+
+    Examples:
+      "Sweet potato, baked":  safe "sweet potato" contains risky "sweet"
+                              → risky keyword suppressed → 0.0
+      "Fried chicken":        safe "chicken" does NOT contain risky "fried"
+                              → "fried" contributes its risk score normally
+      "Ice cream, vanilla":   no safe keyword matches
+                              → best of "ice cream" and "cream" scores used
     """
-    name_lower = food_name.lower()
-    best = 0.0
+    name_lower     = food_name.lower()
+    matched_safe:  list[str]             = []
+    matched_risky: list[tuple[str, float]] = []
+
     for kw, sym_scores in _FOOD_RISK_KEYWORDS.items():
-        if kw in name_lower:
-            best = max(best, sym_scores.get(symptom, 0.0))
+        if kw not in name_lower:
+            continue
+        if not sym_scores:                      # explicitly safe keyword
+            matched_safe.append(kw)
+        else:
+            score = sym_scores.get(symptom, 0.0)
+            if score > 0.0:
+                matched_risky.append((kw, score))
+
+    if not matched_risky:
+        return 0.0
+
+    # A risky keyword is suppressed only when a matched safe keyword
+    # subsumes it (i.e. the safe keyword is the longer, more specific form).
+    best = 0.0
+    for rk, score in matched_risky:
+        suppressed = any(rk in sk for sk in matched_safe)
+        if not suppressed:
+            best = max(best, score)
     return best
 
 
@@ -638,7 +669,7 @@ def predict_causation_by_time(
 
     Parameters
     ----------
-    food_logs_named : list[dict]  — {food_name, weight_g, logged_at}
+    food_logs_named : list[dict]  — {food_name, usda_id, weight_g, logged_at}
     symptom_logs    : list[dict]  — {symptom, intensity, logged_at}
 
     Returns

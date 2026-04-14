@@ -70,6 +70,7 @@ cp .env.example .env
 | `MONGO_URI` | MongoDB connection string (default: `mongodb://localhost:27017`) |
 | `MONGO_DB` | Database name (default: `gut_health`) |
 | `ENV` | Set to `production` to block demo_seed.py |
+| `MOCK_MODE` | Set to `true` to return fake data for every endpoint — no Claude, USDA, or MongoDB calls made |
 
 ---
 
@@ -83,8 +84,12 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-> **Note:** Multiple workers are now safe. The old single-worker restriction was
+> **Note:** Multiple workers are safe. The old single-worker restriction was
 > caused by HuggingFace models held in RAM. Claude API calls are stateless HTTP.
+
+> **Mock mode:** Set `MOCK_MODE=true` in `.env` to run the entire API without any
+> Claude, USDA, or MongoDB connection. Every endpoint returns realistic fake data
+> instantly. Useful for frontend development, integration tests, and CI pipelines.
 
 Swagger UI: `http://localhost:8000/docs`
 
@@ -111,30 +116,34 @@ Creates 3 demo users with 7-day food + symptom history. Blocked in `ENV=producti
 ### Food Parsing
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/food/parse` | Natural meal text → top-k USDA food IDs |
-| `POST` | `/food/text-to-id` | Natural food text → best USDA ID per food |
-| `GET` | `/food/lookup/{usda_id}` | USDA ID → food name + 16 nutrients |
-| `GET` | `/food/tags/{usda_id}` | USDA ID → meal category tags |
+| `POST` | `/food/parse` | Natural meal text → USDA food IDs + optional gut score |
+| `POST` | `/food/lookup` | List of USDA IDs + weights → macros per food and totals |
+| `POST` | `/food/tags` | List of USDA IDs → top USDA food categories with AI gut-health insight |
 
 ### Scoring
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/score` | Onboarding questionnaire → baseline score |
-| `POST` | `/log/food` | Log a meal → updated score |
+| `POST` | `/log/food` | Log a meal in plain text → updated score |
 | `POST` | `/log/symptom` | Log symptoms → updated score |
 
 ### Prediction
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/predict/food-symptom` | Food + symptom logs → causation prediction |
-| `POST` | `/predict/feedback` | User confirms/denies prediction → updates Bayesian prior |
 | `POST` | `/predict/meal-symptom-forecast` | Uneaten meal → symptom risk forecast |
-| `POST` | `/culprit-foods` | Food + symptom logs → top culprit foods |
+| `POST` | `/predict/feedback` | User confirms/denies prediction → updates Bayesian prior |
+| `POST` | `/culprit-foods` | Food + symptom logs → top culprit foods (no user_id needed) |
 
-### Recommendations & User
+### Recommendations
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/recommend/safe-foods` | 5 personalised gut-friendly food recommendations |
+| `POST` | `/recommend/safe_food` | 5 personalised gut-friendly food recommendations |
+| `POST` | `/recommend/risky_food` | Predict which foods triggered which symptoms |
+| `POST` | `/recommend/triggers_food` | 1-line AI insight about foods that trigger a symptom |
+
+### User & System
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/user/{user_id}/dashboard` | 7-day summary from MongoDB |
 | `GET` | `/user/{user_id}/learning-summary` | Bayesian personalisation summary |
 | `GET` | `/db/health` | MongoDB + USDA cache status |
@@ -148,7 +157,7 @@ All AI calls use `claude-sonnet-4-6`. Each call is purpose-built and token-effic
 
 | Module | What Claude does | Max tokens |
 |---|---|---|
-| `food_text_to_usda` | Extract + normalise food entities from text | 400 |
+| `food_text_to_usda` | Extract + normalise food entities from text | 800 |
 | `nutrition_scorer` | Classify food digestibility (easy/difficult) | 120 |
 | `food_symptom_predictor` | Batch NLI: food→symptom entailment scores | 80 × n pairs |
 | `food_recommender` | Generate 5 personalised food recommendations | 200 × n |
@@ -188,7 +197,7 @@ USDA API key: free, instant at https://api.data.gov/signup
 ```
 gut-health-api/
 ├── main.py                    ← FastAPI app — all endpoints
-├── usda_client.py             ← USDA FoodData Central API wrapper + cache  [NEW]
+├── usda_client.py             ← USDA FoodData Central API wrapper + cache
 ├── food_text_to_usda.py       ← Claude entity extract + USDA search
 ├── nutrition_scorer.py        ← Rule-based nutrient math + Claude digestibility
 ├── food_symptom_predictor.py  ← Temporal filter + Claude batched NLI
@@ -197,13 +206,13 @@ gut-health-api/
 ├── food_tag_classifier.py     ← Claude zero-shot tags + nutrient heuristics
 ├── diet_symptom_risk.py       ← Claude diet → symptom probability
 ├── culprit_food_finder.py     ← Temporal filter + Claude batched NLI
-├── user_symptom_memory.py     ← Bayesian Beta prior learning engine  [unchanged]
-├── scorer.py                  ← Rule-based onboarding score engine    [unchanged]
-├── database.py                ← MongoDB CRUD layer                    [unchanged]
-├── text_context_parser.py     ← Meal type + quantity parser           [unchanged]
-├── symptom_note_analyser.py   ← Keyword-based note analyser           [unchanged]
-├── scanner.py                 ← OpenFoodFacts barcode lookup           [unchanged]
-├── demo_seed.py               ← Seeds 3 demo users (ENV guard added)
+├── user_symptom_memory.py     ← Bayesian Beta prior learning engine
+├── scorer.py                  ← Rule-based onboarding score engine
+├── database.py                ← MongoDB CRUD layer
+├── text_context_parser.py     ← Meal type + quantity parser
+├── symptom_note_analyser.py   ← Keyword-based note analyser
+├── scanner.py                 ← OpenFoodFacts barcode lookup
+├── demo_seed.py               ← Seeds 3 demo users (ENV guard)
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -216,7 +225,8 @@ gut-health-api/
 - [ ] Add JWT authentication (`user_id` must come from decoded token, not request body)
 - [ ] Restrict CORS `allow_origins` to your frontend domain
 - [ ] Remove or auth-gate `/db/health` endpoint
-- [ ] Add rate limiting (`slowapi`) on `/food/parse` and `/predict/food-symptom`
+- [ ] Add rate limiting (`slowapi`) on `/food/parse` and `/recommend/risky_food`
 - [ ] Set `ENV=production` in your deployment environment
+- [ ] Remove `MOCK_MODE` (or ensure it is not set to `true`) in production
 - [ ] Set `USDA_API_KEY` (your own key, not DEMO_KEY)
 - [ ] Set `MONGO_URI` to your Atlas or production MongoDB URI

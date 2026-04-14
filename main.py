@@ -22,6 +22,8 @@ from typing import List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
+_MOCK_MODE: bool = os.getenv("MOCK_MODE", "false").lower() == "true"
+
 import anthropic
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,17 +92,34 @@ _state = _State()
 async def lifespan(app: FastAPI):
     t0 = time.time()
 
+    if _MOCK_MODE:
+        log.info("⚠️  MOCK_MODE=true — Claude/AI endpoints return fake data. USDA still uses real API.")
+        # USDA is free — always init it even in mock mode so real food data is available
+        usda_key = os.getenv("USDA_API_KEY")
+        try:
+            from usda_client import USDAClient
+            _state.usda_client = USDAClient(api_key=usda_key, mongo_col=None)
+            _state.usda_ready  = True
+            log.info("USDA client ready (mock mode — no MongoDB cache).")
+        except Exception as exc:
+            log.warning(f"USDA client failed in mock mode: {exc}")
+        yield
+        log.info("Shutdown (mock mode).")
+        return
+
+
     # ── 1. Claude client ──────────────────────────────────────────────────────
-    claude_key = os.getenv("Claude_API_key", "")
+    claude_key = os.getenv("CLAUDE_API_key")
     if not claude_key:
-        log.error("Claude_API_key not set in .env — AI features will fail.")
-    _state.claude_client = anthropic.Anthropic(api_key=claude_key)
-    log.info("Claude client ready.")
+        log.error("CLAUDE_API_key is missing from .env — all AI features will fail.")
+    else:
+        _state.claude_client = anthropic.Anthropic(api_key=claude_key)
+        log.info("Claude client ready.")
+
 
     # ── 2. USDA client ────────────────────────────────────────────────────────
-    usda_key = os.getenv("USDA_API_KEY", "DEMO_KEY")
-    log.info(f"USDA API key: {'custom' if usda_key != 'DEMO_KEY' else 'DEMO_KEY (rate-limited)'}")
-
+    usda_key = os.getenv("USDA_API_KEY")
+    
     try:
         from usda_client import USDAClient
         from database import db as _mongo_db_ref
@@ -241,6 +260,267 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MOCK MODE — one fake-data function per endpoint (activated by MOCK_MODE=true)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mk_mock_score():
+    from scorer import ScoreBreakdown, Concern, Recommendation, DigestiveResult
+    return DigestiveResult(
+        score=72, grade="Good",
+        tagline="[MOCK] Minor improvements in diet or lifestyle could make a real difference.",
+        breakdown=ScoreBreakdown(base_score=100, age_penalty=4, sleep_penalty=6,
+                                  weight_penalty=0, gender_penalty=3, food_penalty=5,
+                                  symptom_penalty=6, compound_penalty=4, final_score=72),
+        concerns=[Concern(category="lifestyle",
+                           description="[MOCK] Sample gut-health concern for demo purposes.")],
+        recommendations=[Recommendation(priority=1,
+                                         advice="[MOCK] Stay hydrated: 2–2.5 L water per day.")],
+    )
+
+
+def _mk_mock_log_food(req):
+    from main import FoodLogResponse, FoodLogItem  # forward-ref; use local names below
+    return {
+        "updated_score":    max(40, min(99, req.current_score + 3)),
+        "food_detected":    2,
+        "logged_at":        utc_now_iso(),
+        "normalised_names": ["Chicken", "Rice"],
+        "results": [
+            {"normalised_name": "Chicken", "usda_id": 171477, "weight_g": 150.0},
+            {"normalised_name": "Rice",    "usda_id": 169704, "weight_g": 200.0},
+        ],
+        "meal_type": req.meal_type,
+        "note": "[MOCK] Balanced meal with moderate gut impact.",
+    }
+
+
+def _mk_mock_log_symptom(req):
+    deduped = list(dict.fromkeys(req.symptoms))
+    return {
+        "updated_score":     max(0, min(100, req.current_score - 8)),
+        "detected_symptoms": deduped,
+        "logged_at":         utc_now_iso(),
+        "note":              "[MOCK] Symptoms logged; moderate penalty applied.",
+    }
+
+
+def _mk_mock_food_parse(req):
+    return {
+        "Food_detected":    2,
+        "Logged_at":        utc_now_iso(),
+        "normalised_names": ["Chicken", "Broccoli"],
+        "results": [
+            {"normalised_name": "Chicken",  "usda_id": 171477, "weight_g": 150.0},
+            {"normalised_name": "Broccoli", "usda_id": 169967, "weight_g": 100.0},
+        ],
+        "meal_type":    "Lunch",
+        "score_impact": 3  if req.current_score is not None else None,
+        "updated_score": max(40, min(99, (req.current_score or 70) + 3))
+                         if req.current_score is not None else None,
+        "note": "[MOCK] Sample food parse result.",
+    }
+
+
+def _mk_mock_food_lookup(req):
+    items = []
+    for item in req.usda_ids:
+        items.append({
+            "usda_id":         item.usda_id,
+            "normalised_name": f"MOCK Food #{item.usda_id}",
+            "weight_g":        item.weight_g,
+            "calories":        round(item.weight_g * 1.5, 2),
+            "carbohydrate":    round(item.weight_g * 0.3, 2),
+            "protein":         round(item.weight_g * 0.2, 2),
+            "fat":             round(item.weight_g * 0.1, 2),
+        })
+    total_w = round(sum(i["weight_g"] for i in items), 1)
+    return {
+        "food_detected":         len(items),
+        "foods_macros":          items,
+        "total_calories":        round(sum(i["calories"]     or 0 for i in items), 4),
+        "total_carb":            round(sum(i["carbohydrate"] or 0 for i in items), 4),
+        "total_protein":         round(sum(i["protein"]      or 0 for i in items), 4),
+        "total_fat":             round(sum(i["fat"]          or 0 for i in items), 4),
+        "total_normalised_name": " + ".join(f"MOCK Food #{i['usda_id']}" for i in items)
+                                  + f" — {total_w} g",
+        "total_weight_g":        total_w,
+    }
+
+
+def _mk_mock_food_tags(req):
+    return {
+        "foods_analysed":    len(req.usda_ids),
+        "categorised_count": len(req.usda_ids),
+        "top_categories": [
+            {"category": "Poultry Products",     "food_count": 3,
+             "insight": "[MOCK] Lean protein, generally gut-friendly", "severity": "Low"},
+            {"category": "Cereal Grains",        "food_count": 2,
+             "insight": "[MOCK] Moderate fibre, watch portion size",   "severity": "Low"},
+            {"category": "Vegetables and Products","food_count": 2,
+             "insight": "[MOCK] High fibre supports gut microbiome",   "severity": "Low"},
+        ],
+    }
+
+
+def _mk_mock_risky_food(req):
+    return {
+        "predictions":              {"Bloating": ["MOCK Food A"], "Heartburn": ["MOCK Food B"]},
+        "food_logs_processed":      len(req.food_logs),
+        "symptom_logs_processed":   len(req.symptom_logs),
+        "composite_meals_detected": 1,
+        "evaluated_at":             datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _mk_mock_safe_food(req):
+    return {
+        "safe_foods": [
+            "[MOCK] Plain steamed rice",
+            "[MOCK] Boiled chicken breast",
+            "[MOCK] Banana",
+            "[MOCK] Plain oatmeal",
+            "[MOCK] Boiled sweet potato",
+        ][:req.n],
+        "foods_analysed":           len(req.food_logs),
+        "composite_meals_detected": 0,
+        "symptoms_considered":      len(req.symptom_logs),
+        "source_note": "[MOCK] Fake recommendations — enable real mode by removing MOCK_MODE=true.",
+    }
+
+
+def _mk_mock_triggers_food(req):
+    return {
+        "symptom_name":  req.symptom_name,
+        "trigger_foods": req.food_name,
+        "insight":       f"[MOCK] {', '.join(req.food_name[:2])} commonly aggravate {req.symptom_name} in sensitive individuals.",
+    }
+
+
+def _mk_mock_feedback(req):
+    return {
+        "user_id":                req.user_id,
+        "usda_id":                req.usda_id,
+        "symptom":                req.symptom,
+        "confirmed":              req.confirmed,
+        "updated_prior":          0.70 if req.confirmed else 0.30,
+        "prior_observations":     5,
+        "prior_confirmations":    3 if req.confirmed else 1,
+        "prior_confidence":       0.55,
+        "personalisation_weight": 0.40,
+        "message":                "[MOCK] Feedback recorded successfully.",
+    }
+
+
+def _mk_mock_forecast(req):
+    return {
+        "user_id":              req.user_id,
+        "proposed_foods_count": len(req.proposed_foods),
+        "food_logs_used":       10,
+        "symptom_logs_used":    5,
+        "personalised":         False,
+        "personalisation_weight": 0.20,
+        "high_risk_symptoms":   ["Bloating"],
+        "medium_risk_symptoms": ["Gas"],
+        "forecasts": [
+            {
+                "symptom": "Bloating", "risk_score": 0.62, "risk_level": "High",
+                "risk_pct": "62%", "top_trigger_food": "MOCK Food",
+                "top_trigger_usda_id": req.proposed_foods[0].usda_id,
+                "top_trigger_score": 0.62, "top_risk_nutrients": ["sodium", "fat"],
+                "per_food_scores": [], "personalised": False,
+                "explanation": "[MOCK] HIGH risk of Bloating (62%).",
+            },
+            {
+                "symptom": "Gas", "risk_score": 0.42, "risk_level": "Medium",
+                "risk_pct": "42%", "top_trigger_food": "MOCK Food",
+                "top_trigger_usda_id": req.proposed_foods[0].usda_id,
+                "top_trigger_score": 0.42, "top_risk_nutrients": ["fiber"],
+                "per_food_scores": [], "personalised": False,
+                "explanation": "[MOCK] MODERATE risk of Gas (42%).",
+            },
+        ],
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _mk_mock_culprit(req):
+    return {
+        "total_foods":    len(req.food_logs),
+        "total_symptoms": len(req.symptom_logs),
+        "culprit_foods": [
+            {
+                "usda_id": req.food_logs[0].usda_id if req.food_logs else 0,
+                "food_name": "[MOCK] Food A", "score": 0.75,
+                "confidence": "High", "occurrence_count": 3,
+                "linked_symptoms": ["Bloating", "Gas"], "top_symptom": "Bloating",
+            },
+        ],
+        "summary": "[MOCK] 1 culprit food identified in demo mode.",
+    }
+
+
+def _mk_mock_learning_summary(user_id):
+    return {
+        "user_id": user_id, "total_food_logs": 42, "total_symptom_logs": 12,
+        "total_log_entries": 54, "personalisation_weight": 0.45, "model_weight": 0.55,
+        "personalisation_stage": "[MOCK] Learning — personal patterns emerging",
+        "learned_pairs": 3,
+        "top_sensitivities": [
+            {
+                "food_symptom_pair": "Dairy → Bloating",
+                "causation_probability": 0.78, "observations": 8,
+                "confirmations": 6, "confidence": 0.70,
+                "last_updated": utc_now_iso(),
+            },
+        ],
+        "learning_message": "[MOCK] 3 food→symptom patterns identified.",
+    }
+
+
+def _mk_mock_dashboard(user_id):
+    return {
+        "user_id": user_id, "name": "Demo User", "current_score": 72, "grade": "Good",
+        "food_logs_this_week": 14, "symptom_logs_this_week": 3,
+        "unique_foods_eaten": ["Chicken", "Rice", "Broccoli", "Banana"],
+        "symptom_frequency": {"Bloating": 2, "Gas": 1},
+        "score_history": [
+            {"date": "2026-04-07", "score": 68, "event": "food"},
+            {"date": "2026-04-10", "score": 72, "event": "food"},
+        ],
+        "personalisation_weight": 0.45,
+        "personalisation_stage": "[MOCK] Learning — personal patterns emerging",
+        "top_sensitivities": [
+            {"pair": "Dairy → Bloating", "probability": 0.78, "observations": 8},
+        ],
+    }
+
+
+def _mk_mock_db_health():
+    return {
+        "status":   "mock",
+        "note":     "MOCK_MODE=true — no real database connection. Remove MOCK_MODE to connect.",
+        "database": "gut_health_mock",
+        "collections": {
+            "users": 3, "food_logs": 84, "symptom_logs": 36,
+            "user_memories": 3, "score_history": 12, "usda_cache": 150,
+        },
+        "users": [
+            {"user_id": "user_anika",  "name": "Anika Rahman",   "score": 74, "grade": "Good"},
+            {"user_id": "user_rafiul", "name": "Rafiul Islam",    "score": 61, "grade": "Fair"},
+            {"user_id": "user_sadia",  "name": "Sadia Hossain",   "score": 55, "grade": "Fair"},
+        ],
+    }
+
+
+def _mk_mock_barcode(req):
+    return {
+        "barcode": req.code.strip(),
+        "product_name": f"[MOCK] Product for barcode {req.code.strip()}",
+        "quantity": "250g",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -263,12 +543,11 @@ def _grade_summary(score: int) -> str:
 # ENDPOINT 1 — POST /score
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ENDPOINT 2 — POST /score
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.post("/score", response_model=DigestiveResult,
           summary="Calculate onboarding digestion score (call once at onboarding)")
 def score(data: DigestiveInput) -> DigestiveResult:
+    if _MOCK_MODE:
+        return _mk_mock_score()
     return calculate_score(data)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +623,9 @@ class FoodLogResponse(BaseModel):
     ),
 )
 def log_food(req: FoodLogRequest) -> FoodLogResponse:
+    if _MOCK_MODE:
+        d = _mk_mock_log_food(req)
+        return FoodLogResponse(**d)
     if req.meal_type not in _VALID_MEAL_TYPES:
         raise HTTPException(422,
             f"Invalid meal_type '{req.meal_type}'. Must be one of: {sorted(_VALID_MEAL_TYPES)}")
@@ -355,12 +637,20 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
     combined_text = f"{req.quantity} {req.foods} for {req.meal_type.lower()}"
     try:
         raw = _state.text_to_usda(combined_text)
+    except RuntimeError as exc:
+        # Claude auth errors are raised as RuntimeError by food_text_to_usda
+        raise HTTPException(503, str(exc))
     except Exception as exc:
         log.exception(f"log/food parse error: {combined_text!r}")
         raise HTTPException(500, f"Food parsing error: {exc}")
 
     if not raw:
-        raise HTTPException(422, "No recognisable food found in the description.")
+        raise HTTPException(
+            422,
+            "No recognisable food found in the description. "
+            "If this keeps happening check your Claude API key is valid and "
+            "matches the variable name in your .env (Claude_API_key or CLAUDE_API_KEY).",
+        )
 
     logged_at        = raw[0].get("logged_at", utc_now_iso())
     normalised_names = [r["normalised_name"].split(",")[0].strip() for r in raw]
@@ -458,6 +748,8 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
 
     **Allowed `severity`:** `Mild` · `Moderate` · `Severe`
     """
+    if _MOCK_MODE:
+        return SymptomLogResponse(**_mk_mock_log_symptom(req))
     # ── Validate ──────────────────────────────────────────────────────────────
     invalid = [s for s in req.symptoms if s not in _VALID_SYMPTOMS]
     if invalid:
@@ -544,6 +836,8 @@ class FoodParseResponse(BaseModel):
     ),
 )
 def food_parse(req: FoodParseRequest) -> FoodParseResponse:
+    if _MOCK_MODE:
+        return FoodParseResponse(**_mk_mock_food_parse(req))
     if not _state.usda_ready:
         raise HTTPException(503, f"USDA pipeline unavailable: {_state.usda_error or 'unknown'}")
     try:
@@ -646,6 +940,8 @@ class FoodLookupResponse(BaseModel):
 @app.post("/food/lookup", response_model=FoodLookupResponse,
           summary="Lookup macros for one or multiple USDA IDs, scaled to portion weight")
 def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
+    if _MOCK_MODE:
+        return FoodLookupResponse(**_mk_mock_food_lookup(req))
     if not _state.usda_ready:
         raise HTTPException(503, f"USDA dataset unavailable: {_state.usda_error or 'unknown'}")
     if not req.usda_ids:
@@ -801,6 +1097,8 @@ def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
 
     Both insight and severity are fully AI-generated — nothing is hardcoded.
     """
+    if _MOCK_MODE:
+        return FoodTagsResponse(**_mk_mock_food_tags(req))
     if not _state.usda_ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -903,6 +1201,7 @@ def _resolve_food_logs(food_logs: list[FoodLogInput]) -> list[dict]:
     return [
         {
             "food_name": name_cache[fl.usda_id],
+            "usda_id":   fl.usda_id,          # required by nutrient danger scoring
             "weight_g":  fl.weight_g,
             "logged_at": fl.logged_at,
         }
@@ -927,11 +1226,14 @@ def _normalise_intensity(raw: str) -> str:
 from food_recommender import recommend_safe_from_logs
 
 
-class SafeFoodRequest(BaseModel):
-    food_logs:    List[FoodLogInput]    = Field(..., min_length=1)
-    symptom_logs: List[SymptomLogInput] = Field(default_factory=list)
-    user_id:      Optional[str]         = None
-    n:            int                   = Field(default=5, ge=1, le=10)
+# Shared request model — used by BOTH /recommend/safe_food and /recommend/risky_food
+class FoodAnalysisRequest(BaseModel):
+    food_logs:    List[FoodLogInput]    = Field(..., min_length=1,
+                                               description="Food entries (usda_id + weight_g + logged_at)")
+    symptom_logs: List[SymptomLogInput] = Field(default_factory=list,
+                                               description="Symptom entries (symptom + intensity + logged_at)")
+    n:            int                   = Field(default=5, ge=1, le=10,
+                                               description="Number of safe food recommendations (safe_food only)")
  
  
 class SafeFoodResponse(BaseModel):
@@ -952,11 +1254,13 @@ class SafeFoodResponse(BaseModel):
         "Claude identifies which foods from your history did NOT trigger symptoms, "
         "then fills remaining slots with new gut-friendly food suggestions. "
         "Returns a list of 5 safe food names. "
-        "Intensity is case-insensitive. user_id is optional."
+        "Intensity is case-insensitive."
     ),
 )
-def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
+def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
  
+    if _MOCK_MODE:
+        return SafeFoodResponse(**_mk_mock_safe_food(req))
     # ── Validate ──────────────────────────────────────────────────────────────
     if not _state.recommender_ready:
         raise HTTPException(503, f"Recommender unavailable: {_state.recommender_error or 'unknown'}")
@@ -1003,9 +1307,9 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
         raise HTTPException(404, "No safe food recommendations could be generated.")
  
     source_note = (
-        "Recommendations generated by Claude AI. "
-        "Safe history foods are returned verbatim; "
-        "new suggestions are gut-friendly foods unlikely to trigger your reported symptoms."
+        "Recommendations based on temporal window analysis and nutrient risk scoring. "
+        "Safe history foods are returned first (foods never eaten before a symptom); "
+        "remaining slots are filled from a curated gut-friendly list filtered to your symptoms."
         + (f" {composite_cnt} composite meal(s) detected and grouped." if composite_cnt else "")
     )
  
@@ -1019,13 +1323,8 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
  
 # ══════════════════════════════════════════════════════════════════════════════
  
-class FoodSymptomPredictRequest(BaseModel):
-    food_logs:    List[FoodLogInput]    = Field(..., min_length=1)
-    symptom_logs: List[SymptomLogInput] = Field(..., min_length=1)
-    user_id:      Optional[str]         = Field(
-        None,
-        description="Optional — supply to enable Bayesian personalisation memory updates.",
-    )
+# Alias so the endpoint signature stays self-documenting
+FoodSymptomPredictRequest = FoodAnalysisRequest
  
  
 class FoodSymptomPredictResponse(BaseModel):
@@ -1050,12 +1349,13 @@ _VALID_PREDICT_SEVERITIES = {"Mild", "Moderate", "Severe"}
         "timeline and uses clinical digestion windows to identify which foods "
         "most plausibly caused each symptom. "
         "Returns {symptom: [foods]}. "
-        "Intensity is case-insensitive (mild/Mild/MILD all accepted). "
-        "Supply user_id to enable Bayesian personalisation memory updates."
+        "Intensity is case-insensitive (mild/Mild/MILD all accepted)."
     ),
 )
 def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictResponse:
  
+    if _MOCK_MODE:
+        return FoodSymptomPredictResponse(**_mk_mock_risky_food(req))
     # ── Validate ──────────────────────────────────────────────────────────────
     if not _state.predictor_ready:
         raise HTTPException(503, f"Predictor unavailable: {_state.predictor_error or 'unknown'}")
@@ -1096,35 +1396,7 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
     except Exception as exc:
         log.exception("predict/food-symptom — temporal analysis failed")
         raise HTTPException(500, f"Prediction error: {exc}")
- 
-    # ── Bayesian memory auto-update (only when user_id is provided) ───────────
-    if req.user_id and _state.auto_update_from_logs and _state.memory_store:
-        try:
-            food_entries = [
-                FoodLogEntry(
-                    user_id    = req.user_id,
-                    usda_id    = fl.usda_id,
-                    logged_at  = fl.logged_at,
-                    quantity_g = fl.weight_g,
-                )
-                for fl in req.food_logs
-            ]
-            symptom_entries = [
-                SymptomLogEntry(
-                    user_id   = req.user_id,
-                    symptom   = sl.symptom,
-                    logged_at = sl.logged_at,
-                    intensity = _normalise_intensity(sl.intensity),
-                )
-                for sl in req.symptom_logs
-            ]
-            _state.auto_update_from_logs(
-                req.user_id, food_entries, symptom_entries,
-                store=_state.memory_store,
-            )
-        except Exception as exc:
-            log.warning(f"Memory auto-update failed (non-fatal): {exc}")
- 
+
     return FoodSymptomPredictResponse(
         predictions              = predictions,
         food_logs_processed      = len(req.food_logs),
@@ -1167,6 +1439,8 @@ _TRIGGERS_SYSTEM = (
     summary="Get a 1-line AI insight about foods that trigger a specific symptom",
 )
 def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
+    if _MOCK_MODE:
+        return TriggersFoodResponse(**_mk_mock_triggers_food(req))
     if _state.claude_client is None:
         raise HTTPException(503, "Claude client not available — check Claude_API_key in .env")
 
@@ -1211,6 +1485,8 @@ class FeedbackResponse(BaseModel):
 @app.post("/predict/feedback", response_model=FeedbackResponse,
           summary="Submit explicit feedback to improve personalised predictions")
 def predict_feedback(req: FeedbackRequest) -> FeedbackResponse:
+    if _MOCK_MODE:
+        return FeedbackResponse(**_mk_mock_feedback(req))
     if _state.memory_store is None:
         raise HTTPException(503, "Memory store unavailable.")
     memory = _state.memory_store.load(req.user_id)
@@ -1256,6 +1532,8 @@ def _personalisation_stage(weight: float) -> str:
 @app.get("/user/{user_id}/learning-summary", response_model=LearningSummaryResponse,
          summary="View what the model has learned about this user's food sensitivities")
 def learning_summary(user_id: str) -> LearningSummaryResponse:
+    if _MOCK_MODE:
+        return LearningSummaryResponse(**_mk_mock_learning_summary(user_id))
     if _state.memory_store is None:
         raise HTTPException(503, "Memory store unavailable.")
     summary = _state.memory_store.summary(user_id)
@@ -1305,6 +1583,9 @@ class DashboardResponse(BaseModel):
 @app.get("/user/{user_id}/dashboard", response_model=DashboardResponse,
          summary="Full 7-day user dashboard from MongoDB")
 def user_dashboard(user_id: str) -> DashboardResponse:
+    if _MOCK_MODE:
+        d = _mk_mock_dashboard(user_id)
+        return DashboardResponse(**d)
     mongo = _state._mongo_db
     if mongo is None:
         raise HTTPException(503, "MongoDB not connected.")
@@ -1331,6 +1612,8 @@ def user_dashboard(user_id: str) -> DashboardResponse:
 
 @app.get("/db/health", summary="MongoDB connection health and collection stats")
 def db_health():
+    if _MOCK_MODE:
+        return _mk_mock_db_health()
     mongo = _state._mongo_db
     if mongo is None:
         return {"status": "disconnected", "error": "MongoDB not initialised"}
@@ -1400,6 +1683,10 @@ class MealForecastResponse(BaseModel):
 @app.post("/predict/meal-symptom-forecast", response_model=MealForecastResponse,
           summary="Predict which symptoms a hypothetical uneaten meal might cause")
 def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
+    if _MOCK_MODE:
+        d = _mk_mock_forecast(req)
+        forecasts = [MealSymptomForecastOut(**f) for f in d.pop("forecasts")]
+        return MealForecastResponse(**d, forecasts=forecasts)
     if not _state.meal_forecast_ready:
         raise HTTPException(503, f"Meal forecast unavailable: {_state.meal_forecast_error or 'unknown'}")
     if not _state.usda_ready:
@@ -1483,6 +1770,8 @@ class BarcodeResponse(BaseModel):
 
 @app.post("/scan/barcode", response_model=BarcodeResponse)
 def scan_barcode(req: BarcodeRequest):
+    if _MOCK_MODE:
+        return BarcodeResponse(**_mk_mock_barcode(req))
     try:
         product = fetch_product(req.code.strip())
     except Exception as e:
@@ -1521,6 +1810,10 @@ class CulpritResponse(BaseModel):
 @app.post("/culprit-foods", response_model=CulpritResponse,
           summary="Find which foods most likely caused symptoms (NO user_id needed)")
 def culprit_foods(req: CulpritRequest) -> CulpritResponse:
+    if _MOCK_MODE:
+        d = _mk_mock_culprit(req)
+        culprits = [CulpritFoodOut(**f) for f in d.pop("culprit_foods")]
+        return CulpritResponse(**d, culprit_foods=culprits)
     if not _state.usda_ready:
         raise HTTPException(503, "USDA client unavailable.")
     try:

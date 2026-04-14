@@ -141,6 +141,15 @@ def _extract_entities(text: str) -> tuple[Optional[str], list[dict]]:
         return meal_type, foods
 
     except Exception as exc:
+        # Re-raise auth errors so the caller can surface them as 503 instead
+        # of silently returning an empty list (which produces a confusing 422).
+        err_str = str(exc).lower()
+        if any(k in err_str for k in ("authentication", "api_key", "invalid x-api-key", "401")):
+            log.error(f"Claude API authentication failed: {exc}")
+            raise RuntimeError(
+                "Claude API key is invalid or missing. "
+                "Check Claude_API_key / CLAUDE_API_KEY in your .env file."
+            ) from exc
         log.warning(f"Claude entity extraction failed: {exc}")
         return None, []
 
