@@ -96,7 +96,7 @@ def predict_symptom_risk(
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 300,
+            max_tokens = 180,
             system     = _RISK_SYSTEM,
             messages   = [{"role": "user", "content": diet_summary}],
         )

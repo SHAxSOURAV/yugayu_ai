@@ -294,8 +294,7 @@ def _run_claude_classification(desc: str, profile: NutrientProfile) -> tuple[int
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 120,
-            system     = _DIGESTIBILITY_SYSTEM,
+            max_tokens = 80,
             messages   = [{"role": "user", "content": user_msg}],
         )
         raw  = msg.content[0].text.strip()
@@ -451,36 +450,14 @@ def analyse_symptom_log(symptom: str, severity: str, logged_at: datetime) -> Sym
 # score_meal_claude — single-call gut health score for a parsed meal
 # ─────────────────────────────────────────────────────────────────────────────
 
-_MEAL_SCORE_SYSTEM = """\
-You are a clinical gut health dietitian AI evaluating a meal's overall impact
-on gut health. You receive a list of foods with their weights and the meal type.
-
-Assess three things:
-1. Nutritional quality — fibre, fat, sugar, sodium, protein balance
-2. Meal timing appropriateness — is this food right for this time of day?
-3. Specific gut risks — fried food, spicy food, high fat at dinner, etc.
-
-MEAL TIMING RULES:
-- Breakfast: Light, easily digestible foods ideal. Fried or heavy = penalise.
-- Lunch: Widest tolerance. Moderate portions of anything mostly fine.
-- Dinner: Spicy, fatty, heavy foods are WORSE here (digestion slows during sleep).
-- Snack: Light portions ideal. High sugar or heavy snacks penalised.
-
-SCORING GUIDE (-5 to +5 integer):
-+5  Excellent — gut-friendly, perfectly timed, anti-inflammatory
-+3/+4  Good foods, well-timed, minor concerns only
-+1/+2  Decent — some positives, mild concerns
- 0  Neutral — mixed bag, roughly cancels out
--1/-2  Problematic elements — some gut irritants present
--3/-4  Clearly gut-unfriendly — fried/high-fat/high-sugar/poorly timed
--5  Very harmful — multiple gut stressors combined badly
-
-Return ONLY valid JSON — no markdown, no explanation:
-{
-  "raw_score": <integer -5 to +5>,
-  "note": "<exactly 10 to 12 words, clinically warm, specific to this meal>"
-}
-"""
+_MEAL_SCORE_SYSTEM = (
+    "You are a gut-health dietitian AI. Score a meal's gut impact (-5 to +5 integer). "
+    "Consider: nutritional quality (fibre/fat/sugar/sodium/protein), meal timing fit, gut risks (fried/spicy/high-fat/high-sugar). "
+    "Timing: Breakfast=light preferred; Dinner=fatty/spicy/heavy penalised more; Lunch=widest tolerance; Snack=light portions. "
+    "+5=excellent gut-friendly; 0=neutral; -5=very harmful (multiple stressors). "
+    "Return ONLY valid JSON (no markdown): "
+    '{"raw_score":<-5 to +5 int>,"note":"<exactly 10-12 words, clinical, specific to this meal>"}'
+)
 
 
 def score_meal_claude(
@@ -547,29 +524,15 @@ def score_meal_claude(
 # Single call → (penalty: int 0-40, note: str 7-10 words)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SYMPTOM_SCORE_SYSTEM = """\
-You are a digestive health scoring AI. A user has reported gut symptoms.
-Generate a penalty score (0–40) that will be subtracted from their digestion score,
-and a short clinical note (7–10 words exactly) summarising what was reported.
-
-PENALTY SCALE — commit to it precisely:
-  • 1 symptom, Mild, no note           →  3–5
-  • 1 symptom, Moderate, no note       →  6–9
-  • 1 symptom, Severe, no note         → 10–13
-  • 2–3 symptoms, Moderate, no note    → 10–16
-  • 4–6 symptoms, Moderate, no note    → 17–24
-  • 7–9 symptoms, Severe, no note      → 25–32
-  • 10–12 symptoms, Severe + bad note  → 33–40
-
-NOTE RULES:
-  • Exactly 7–10 words. No more, no less.
-  • Clinical, neutral tone. No exclamation marks.
-  • Must reference why the dominant symptom or severity may appear.
-  • Example: "Severe bloating are may be caused by high-fat intake."
-
-Return ONLY valid JSON, no markdown:
-{"penalty": <integer 0-40>, "note": "<7-10 word string>"}
-"""
+_SYMPTOM_SCORE_SYSTEM = (
+    "You are a gut-health scoring AI. Return a penalty (0-40) subtracted from a digestion score "
+    "and a 7-10 word clinical note. "
+    "Penalty guide: 1×Mild=3-5; 1×Moderate=6-9; 1×Severe=10-13; 2-3×Moderate=10-16; "
+    "4-6×Moderate=17-24; 7-9×Severe=25-32; 10-12×Severe+note=33-40. "
+    "Note: exactly 7-10 words, clinical neutral tone, references dominant symptom. "
+    "Return ONLY valid JSON (no markdown): "
+    '{"penalty":<0-40 int>,"note":"<7-10 words>"}'
+)
 
 
 def score_symptom_log_claude(

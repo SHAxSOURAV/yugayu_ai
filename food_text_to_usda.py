@@ -53,54 +53,33 @@ def init(claude_client, usda_client) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _EXTRACT_SYSTEM = """\
-You are a clinical nutrition assistant that parses meal descriptions for a \
-gut health tracking app. The app stores foods using USDA FoodData Central IDs, \
-so every food you return must be searchable in the USDA database.
+You are a clinical nutrition assistant for a USDA FoodData Central gut health app.
+Parse meal text. Return ONLY valid JSON, no markdown:
+{"meal_type":"Breakfast"|"Lunch"|"Dinner"|"Snack"|null,"foods":[{"word":"<user phrase>","normalised":"<USDA name>","weight_g":<positive number>}]}
 
-Given a user's meal text, return a JSON object with exactly two keys:
+NORMALISED: Use USDA naming (e.g. "Rice, white, long-grain, cooked" not "white rice").
 
-1. "meal_type": one of "Breakfast", "Lunch", "Dinner", "Snack", or null.
-   Detect from context words like "breakfast", "lunch", "dinner", "morning",
-   "noon", "tonight", "snack", etc.
+COMPOSITE DISHES (biryani, fried rice, curry, pasta, soup, burger, sandwich, stew):
+Return ONLY the 2-3 MAJOR ingredients — the protein source and the carb/starch base.
+SKIP all minor ingredients: oils, spices, herbs, onions, garlic, condiments, sauces.
+Rule: only include an ingredient if its estimated weight is ≥ 30g.
 
-2. "foods": a JSON array. Each element:
-   {
-     "word":       <the food phrase as written by the user>,
-     "normalised": <USDA-searchable food name — see rules below>,
-     "weight_g":   <weight in grams as a positive number>
-   }
+Example — "chicken biryani 400g" → return only:
+{"word":"chicken biryani","normalised":"Chicken, broiler, breast, cooked, roasted","weight_g":160}
+{"word":"chicken biryani","normalised":"Rice, white, long-grain, cooked","weight_g":240}
 
-NORMALISATION RULES:
-- Use USDA FoodData Central naming conventions:
-    Good: "Rice, white, long-grain, cooked"
-    Good: "Chicken, broiler, breast, cooked, roasted"
-    Bad:  "chicken biryani"  (USDA does not index ethnic dish names)
-- For COMPOSITE or ETHNIC dishes (biryani, fried rice, pasta bake, curry,
-  stew, soup, sandwich, burger, pilaf, etc.) ALWAYS decompose into individual
-  USDA-searchable ingredient foods. Do NOT return the dish name as-is.
-  Example — "chicken biriyani 400g":
-    { "word": "chicken biriyani", "normalised": "Chicken, broiler or fryer, breast, meat only, cooked, roasted", "weight_g": 160 }
-    { "word": "chicken biriyani", "normalised": "Rice, white, long-grain, cooked",                                "weight_g": 200 }
-    { "word": "chicken biriyani", "normalised": "Oil, vegetable",                                                 "weight_g": 20  }
-    { "word": "chicken biriyani", "normalised": "Onions, raw",                                                    "weight_g": 20  }
-  Example — "egg fried rice":
-    { "word": "egg fried rice", "normalised": "Rice, white, long-grain, cooked", "weight_g": 200 }
-    { "word": "egg fried rice", "normalised": "Egg, whole, cooked, fried",       "weight_g": 60  }
-    { "word": "egg fried rice", "normalised": "Oil, vegetable",                  "weight_g": 10  }
-- For simple whole foods (apple, oatmeal, grilled chicken) return directly.
+Example — "egg fried rice 350g" → return only:
+{"word":"egg fried rice","normalised":"Rice, white, long-grain, cooked","weight_g":270}
+{"word":"egg fried rice","normalised":"Egg, whole, cooked, fried","weight_g":80}
 
-WEIGHT RULES (apply in order):
-  a. User states a weight for a specific food — use it exactly.
-  b. User states a TOTAL weight for a dish — decompose, then distribute the
-     stated total across components in realistic proportions.
-     Component weights MUST sum to the stated total.
-  c. No weight mentioned — estimate a realistic adult single-serving weight
-     per component based on standard dietary guidelines.
+Simple whole foods (apple, oatmeal, grilled chicken): return directly.
 
-OUTPUT RULES:
-  - weight_g must always be a positive number (never 0 or null).
-  - Return ONLY the JSON object — no markdown, no extra text.
-  - If no food is found, return: {"meal_type": null, "foods": []}
+WEIGHT:
+a) User states weight for a food → use exactly.
+b) User states total weight for a dish → split across major components only; must sum to stated total.
+c) No weight → estimate realistic adult single-serving per major component.
+
+weight_g must always be a positive number. No food found → {"meal_type":null,"foods":[]}
 """
 
 
@@ -119,7 +98,7 @@ def _extract_entities(text: str) -> tuple[Optional[str], list[dict]]:
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 800,
+            max_tokens = 300,
             system     = _EXTRACT_SYSTEM,
             messages   = [{"role": "user", "content": text}],
         )

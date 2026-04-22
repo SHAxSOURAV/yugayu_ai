@@ -463,7 +463,7 @@ def recommend_safe_foods(
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 200 * n + 200,
+            max_tokens = 140 * n + 120,
             system     = _REC_SYSTEM,
             messages   = [{"role": "user", "content": prompt}],
         )
