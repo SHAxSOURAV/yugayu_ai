@@ -104,6 +104,10 @@ class _MongoClient:
         # Permanent — same foods at same weights for same meal type always score the same
         self._col("meal_score_cache").create_index("cache_key", unique=True)
 
+        # gentle_note_cache: one-sentence Claude note keyed by SHA-256 of trigger summary
+        # Permanent — same trigger pattern always produces equivalent advice
+        self._col("gentle_note_cache").create_index("cache_key", unique=True)
+
         log.info("MongoDB indexes ensured.")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -428,6 +432,29 @@ class _MongoClient:
             {"$set": {
                 "cache_key": cache_key,
                 "raw_score": raw_score,
+                "note":      note,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # GENTLE NOTE CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_gentle_note(self, cache_key: str) -> Optional[str]:
+        """Return cached gentle note string, or None on miss."""
+        doc = self._col("gentle_note_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0, "note": 1}
+        )
+        return doc["note"] if doc else None
+
+    def set_gentle_note(self, cache_key: str, note: str) -> None:
+        """Persist a gentle note result."""
+        self._col("gentle_note_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
                 "note":      note,
                 "cached_at": datetime.now(timezone.utc).isoformat(),
             }},

@@ -257,7 +257,22 @@ async def lifespan(app: FastAPI):
 # FastAPI app
 # ─────────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Gut Health API", version="4.0.0", lifespan=lifespan)
+# On Railway, RAILWAY_PUBLIC_DOMAIN is set automatically (e.g. "your-app.up.railway.app").
+# FastAPI needs to know this so the Swagger UI sends requests to the correct
+# HTTPS URL instead of the internal http://0.0.0.0:PORT — which browsers block
+# as mixed content, causing the "Failed to fetch" error in Swagger.
+_railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+_servers = (
+    [{"url": f"https://{_railway_domain}", "description": "Production (Railway)"}]
+    if _railway_domain else []
+)
+
+app = FastAPI(
+    title    = "Gut Health API",
+    version  = "4.0.0",
+    lifespan = lifespan,
+    servers  = _servers or None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1474,6 +1489,149 @@ def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
         symptom_name  = req.symptom_name,
         trigger_foods = req.food_name,
         insight       = insight,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/gentle_note
+# ─────────────────────────────────────────────────────────────────────────────
+
+import hashlib as _hashlib
+
+_GENTLE_NOTE_SYSTEM = (
+    "You are a warm, encouraging gut-health coach. "
+    "Given a short summary of a user's recent diet and symptoms, "
+    "write exactly ONE gentle, supportive sentence of advice (15-20 words). "
+    "Be specific to what they ate and felt. No lists, no markdown, no preamble. "
+    "Return only the sentence."
+)
+
+
+class GentleNoteResponse(BaseModel):
+    note:             str   # the one gentle sentence
+    symptoms_found:   int
+    trigger_foods:    int
+    cached:           bool
+
+
+@app.post(
+    "/recommend/gentle_note",
+    response_model=GentleNoteResponse,
+    summary="One gentle sentence of gut-health advice based on food and symptom logs",
+    description=(
+        "Pass food_logs (usda_id + weight_g + logged_at) and symptom_logs "
+        "(symptom + intensity + logged_at). Returns a single warm, encouraging "
+        "sentence of advice tailored to the user's actual trigger foods and symptoms. "
+        "Zero Claude calls on a cache hit. Haiku model on a miss."
+    ),
+)
+def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
+
+    if _MOCK_MODE:
+        return GentleNoteResponse(
+            note="Keep up the great work — your balanced meals are supporting your gut health well.",
+            symptoms_found=len(req.symptom_logs),
+            trigger_foods=0,
+            cached=False,
+        )
+
+    if not _state.predictor_ready:
+        raise HTTPException(503, f"Predictor unavailable: {_state.predictor_error or 'unknown'}")
+    if not _state.usda_ready:
+        raise HTTPException(503, "USDA client unavailable.")
+
+    # ── Resolve usda_id → food names (uses USDA search cache) ────────────────
+    food_logs_named = _resolve_food_logs(req.food_logs)
+
+    symptom_logs_plain = [
+        {
+            "symptom":   sl.symptom,
+            "intensity": _normalise_intensity(sl.intensity),
+            "logged_at": sl.logged_at,
+        }
+        for sl in req.symptom_logs
+    ]
+
+    # ── Run pure-logic trigger finder (zero Claude calls) ─────────────────────
+    from food_symptom_predictor import predict_causation_by_time
+    predictions: dict[str, list[str]] = predict_causation_by_time(
+        food_logs_named, symptom_logs_plain
+    )
+
+    # Build compact trigger summary: top 2 symptoms + their top 2 trigger foods
+    # This is what we feed Claude — never the full 168-entry log
+    trigger_lines: list[str] = []
+    all_trigger_foods: set[str] = set()
+    for symptom, foods in list(predictions.items())[:2]:
+        top_foods = foods[:2]
+        all_trigger_foods.update(top_foods)
+        if top_foods:
+            trigger_lines.append(f"{symptom}: {', '.join(top_foods)}")
+
+    n_symptoms = len([s for s, f in predictions.items() if f])
+    n_triggers = len(all_trigger_foods)
+
+    # If no triggers found — a gentle positive note still helps
+    if not trigger_lines:
+        dominant_symptom = req.symptom_logs[0].symptom if req.symptom_logs else None
+        summary = (
+            f"The user logged {len(req.food_logs)} food entries "
+            + (f"and reported {dominant_symptom}. " if dominant_symptom else "with no symptoms reported. ")
+            + "No clear dietary trigger was identified."
+        )
+    else:
+        summary = (
+            f"The user logged {len(req.food_logs)} food entries. "
+            f"Likely triggers — {'; '.join(trigger_lines)}."
+        )
+
+    # ── Cache key: SHA-256 of the compact trigger summary (not the raw logs) ──
+    cache_key = _hashlib.sha256(summary.encode()).hexdigest()
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is not None:
+        try:
+            cached_note = mongo_db.get_gentle_note(cache_key)
+            if cached_note:
+                log.info(f"gentle_note cache HIT key={cache_key[:12]}…")
+                return GentleNoteResponse(
+                    note=cached_note,
+                    symptoms_found=n_symptoms,
+                    trigger_foods=n_triggers,
+                    cached=True,
+                )
+        except Exception as exc:
+            log.warning(f"gentle_note cache read failed: {exc}")
+
+    # ── Claude call — Haiku, max 60 tokens (one sentence) ────────────────────
+    if _state.claude_client is None:
+        raise HTTPException(503, "Claude client unavailable.")
+
+    try:
+        msg = _state.claude_client.messages.create(
+            model      = "claude-haiku-4-5-20251001",
+            max_tokens = 60,
+            system     = _GENTLE_NOTE_SYSTEM,
+            messages   = [{"role": "user", "content": summary}],
+        )
+        note = msg.content[0].text.strip().strip('"')
+    except Exception as exc:
+        log.exception("gentle_note — Claude call failed")
+        raise HTTPException(500, f"Note generation failed: {exc}")
+
+    # ── Store in cache ────────────────────────────────────────────────────────
+    if mongo_db is not None:
+        try:
+            mongo_db.set_gentle_note(cache_key, note)
+            log.info(f"gentle_note cache SET key={cache_key[:12]}…")
+        except Exception as exc:
+            log.warning(f"gentle_note cache write failed: {exc}")
+
+    return GentleNoteResponse(
+        note=note,
+        symptoms_found=n_symptoms,
+        trigger_foods=n_triggers,
+        cached=False,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
