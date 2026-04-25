@@ -88,9 +88,21 @@ class _MongoClient:
         # user_memories: unique per user
         self._col("user_memories").create_index("user_id", unique=True)
 
-        # usda_cache: unique on fdc_id — O(1) cache lookups
+        # usda_cache: unique on fdc_id — O(1) nutrient lookups
         # food_category stored here is used by POST /food/tags
         self._col("usda_cache").create_index("fdc_id", unique=True)
+
+        # usda_search_cache: USDA text-search results keyed by normalised query string
+        # Permanent — "Chicken, broiler, breast, cooked, roasted" always returns the same ID
+        self._col("usda_search_cache").create_index("query", unique=True)
+
+        # food_parse_cache: Claude parse results keyed by SHA-256 of input text
+        # Permanent — nutritional identity of a food never changes
+        self._col("food_parse_cache").create_index("cache_key", unique=True)
+
+        # meal_score_cache: Claude meal score keyed by SHA-256 of foods+meal_type
+        # Permanent — same foods at same weights for same meal type always score the same
+        self._col("meal_score_cache").create_index("cache_key", unique=True)
 
         log.info("MongoDB indexes ensured.")
 
@@ -335,6 +347,92 @@ class _MongoClient:
                 if v.observations > 0
             ][:5],
         }
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # USDA SEARCH CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_usda_search(self, query: str) -> Optional[list]:
+        """
+        Return cached USDA search results for query, or None on miss.
+        Results are a list of {rank, usda_id, usda_description, similarity} dicts.
+        """
+        doc = self._col("usda_search_cache").find_one(
+            {"query": query}, {"_id": 0, "query": 0, "cached_at": 0}
+        )
+        return doc.get("results") if doc else None
+
+    def set_usda_search(self, query: str, results: list) -> None:
+        """Persist USDA search results for a query string."""
+        self._col("usda_search_cache").update_one(
+            {"query": query},
+            {"$set": {
+                "query":     query,
+                "results":   results,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FOOD PARSE CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_food_parse(self, cache_key: str) -> Optional[list]:
+        """
+        Return cached parse result for cache_key, or None on miss.
+        Result is a list of food dicts (without logged_at — caller adds that).
+        """
+        doc = self._col("food_parse_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0, "cache_key": 0, "cached_at": 0}
+        )
+        if doc:
+            return doc.get("foods")
+        return None
+
+    def set_food_parse(self, cache_key: str, foods: list) -> None:
+        """
+        Persist a parse result. foods is the list of food dicts from text_to_usda(),
+        with logged_at stripped out before storing.
+        """
+        self._col("food_parse_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
+                "foods":     foods,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MEAL SCORE CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_meal_score(self, cache_key: str) -> Optional[tuple]:
+        """
+        Return (raw_score: int, note: str) for cache_key, or None on miss.
+        """
+        doc = self._col("meal_score_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0}
+        )
+        if doc:
+            return doc["raw_score"], doc["note"]
+        return None
+
+    def set_meal_score(self, cache_key: str, raw_score: int, note: str) -> None:
+        """Persist a meal score result."""
+        self._col("meal_score_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
+                "raw_score": raw_score,
+                "note":      note,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

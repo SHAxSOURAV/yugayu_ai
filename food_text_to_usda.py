@@ -29,6 +29,7 @@ Each dict:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Optional
@@ -39,13 +40,29 @@ log = logging.getLogger(__name__)
 
 _claude_client = None
 _usda_client   = None
+_mongo_db      = None   # set by init() — optional, cache disabled if None
 
 
-def init(claude_client, usda_client) -> None:
-    global _claude_client, _usda_client
+def init(claude_client, usda_client, mongo_db=None) -> None:
+    global _claude_client, _usda_client, _mongo_db
     _claude_client = claude_client
     _usda_client   = usda_client
-    log.info("food_text_to_usda: Claude + USDA client ready.")
+    _mongo_db      = mongo_db
+    status = "MongoDB cache enabled" if mongo_db is not None else "no cache"
+    log.info(f"food_text_to_usda: Claude + USDA client ready ({status}).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache key helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cache_key(text: str) -> str:
+    """
+    SHA-256 of the lowercased, whitespace-normalised input text.
+    Ensures 'Chicken Biryani 400g' and 'chicken biryani 400g' share one cache entry.
+    """
+    normalised = " ".join(text.lower().split())
+    return hashlib.sha256(normalised.encode()).hexdigest()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,33 +70,54 @@ def init(claude_client, usda_client) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _EXTRACT_SYSTEM = """\
-You are a clinical nutrition assistant for a USDA FoodData Central gut health app.
-Parse meal text. Return ONLY valid JSON, no markdown:
-{"meal_type":"Breakfast"|"Lunch"|"Dinner"|"Snack"|null,"foods":[{"word":"<user phrase>","normalised":"<USDA name>","weight_g":<positive number>}]}
+You are a clinical nutrition assistant that parses meal descriptions for a \
+gut health tracking app. The app stores foods using USDA FoodData Central IDs, \
+so every food you return must be searchable in the USDA database.
 
-NORMALISED: Use USDA naming (e.g. "Rice, white, long-grain, cooked" not "white rice").
+Given a user's meal text, return a JSON object with exactly two keys:
 
-COMPOSITE DISHES (biryani, fried rice, curry, pasta, soup, burger, sandwich, stew):
-Return ONLY the 2-3 MAJOR ingredients — the protein source and the carb/starch base.
-SKIP all minor ingredients: oils, spices, herbs, onions, garlic, condiments, sauces.
-Rule: only include an ingredient if its estimated weight is ≥ 30g.
+1. "meal_type": one of "Breakfast", "Lunch", "Dinner", "Snack", or null.
+   Detect from context words like "breakfast", "lunch", "dinner", "morning",
+   "noon", "tonight", "snack", etc.
 
-Example — "chicken biryani 400g" → return only:
-{"word":"chicken biryani","normalised":"Chicken, broiler, breast, cooked, roasted","weight_g":160}
-{"word":"chicken biryani","normalised":"Rice, white, long-grain, cooked","weight_g":240}
+2. "foods": a JSON array. Each element:
+   {
+     "word":       <the food phrase as written by the user>,
+     "normalised": <USDA-searchable food name — see rules below>,
+     "weight_g":   <weight in grams as a positive number>
+   }
 
-Example — "egg fried rice 350g" → return only:
-{"word":"egg fried rice","normalised":"Rice, white, long-grain, cooked","weight_g":270}
-{"word":"egg fried rice","normalised":"Egg, whole, cooked, fried","weight_g":80}
+NORMALISATION RULES:
+- Use USDA FoodData Central naming conventions:
+    Good: "Rice, white, long-grain, cooked"
+    Good: "Chicken, broiler, breast, cooked, roasted"
+    Bad:  "chicken biryani"  (USDA does not index ethnic dish names)
+- For COMPOSITE or ETHNIC dishes (biryani, fried rice, pasta bake, curry,
+  stew, soup, sandwich, burger, pilaf, etc.) ALWAYS decompose into individual
+  USDA-searchable ingredient foods. Do NOT return the dish name as-is.
+  Example — "chicken biriyani 400g":
+    { "word": "chicken biriyani", "normalised": "Chicken, broiler or fryer, breast, meat only, cooked, roasted", "weight_g": 160 }
+    { "word": "chicken biriyani", "normalised": "Rice, white, long-grain, cooked",                                "weight_g": 200 }
+    { "word": "chicken biriyani", "normalised": "Oil, vegetable",                                                 "weight_g": 20  }
+    { "word": "chicken biriyani", "normalised": "Onions, raw",                                                    "weight_g": 20  }
+  Example — "egg fried rice":
+    { "word": "egg fried rice", "normalised": "Rice, white, long-grain, cooked", "weight_g": 200 }
+    { "word": "egg fried rice", "normalised": "Egg, whole, cooked, fried",       "weight_g": 60  }
+    { "word": "egg fried rice", "normalised": "Oil, vegetable",                  "weight_g": 10  }
+- For simple whole foods (apple, oatmeal, grilled chicken) return directly.
 
-Simple whole foods (apple, oatmeal, grilled chicken): return directly.
+WEIGHT RULES (apply in order):
+  a. User states a weight for a specific food — use it exactly.
+  b. User states a TOTAL weight for a dish — decompose, then distribute the
+     stated total across components in realistic proportions.
+     Component weights MUST sum to the stated total.
+  c. No weight mentioned — estimate a realistic adult single-serving weight
+     per component based on standard dietary guidelines.
 
-WEIGHT:
-a) User states weight for a food → use exactly.
-b) User states total weight for a dish → split across major components only; must sum to stated total.
-c) No weight → estimate realistic adult single-serving per major component.
-
-weight_g must always be a positive number. No food found → {"meal_type":null,"foods":[]}
+OUTPUT RULES:
+  - weight_g must always be a positive number (never 0 or null).
+  - Return ONLY the JSON object — no markdown, no extra text.
+  - If no food is found, return: {"meal_type": null, "foods": []}
 """
 
 
@@ -97,7 +135,7 @@ def _extract_entities(text: str) -> tuple[Optional[str], list[dict]]:
 
     try:
         msg = _claude_client.messages.create(
-            model      = "claude-sonnet-4-6",
+            model      = "claude-haiku-4-5-20251001",
             max_tokens = 300,
             system     = _EXTRACT_SYSTEM,
             messages   = [{"role": "user", "content": text}],
@@ -207,9 +245,15 @@ def text_to_usda(text: str) -> list[dict]:
     """
     Natural meal text → list of USDA food records with weight_g.
 
-    Composite/ethnic dishes are automatically decomposed into individual
-    USDA-searchable components by Claude. Each component gets a USDA ID
-    via multi-attempt search.
+    Cache strategy (MongoDB):
+      - Cache key: SHA-256 of lowercased, whitespace-normalised input text.
+      - On HIT:  skip Claude call and all USDA API calls entirely.
+                 Attach a fresh logged_at and return immediately (~5 ms).
+      - On MISS: run Claude extraction + USDA ID lookup as normal,
+                 then store the result (without logged_at) for future hits.
+
+    logged_at is always generated fresh so each returned record reflects
+    the actual wall-clock time of the request, never the time of first parse.
 
     Returns list of dicts:
         raw_food, normalised_name, usda_id, usda_description,
@@ -218,6 +262,21 @@ def text_to_usda(text: str) -> list[dict]:
     if _claude_client is None or _usda_client is None:
         raise RuntimeError("food_text_to_usda not initialised. Call init() first.")
 
+    key = _cache_key(text)
+
+    # ── Cache lookup ──────────────────────────────────────────────────────────
+    if _mongo_db is not None:
+        try:
+            cached = _mongo_db.get_food_parse(key)
+            if cached:
+                logged_at = utc_now_iso()
+                log.info(f"food_parse cache HIT for key={key[:12]}… ({len(cached)} foods)")
+                return [{**item, "logged_at": logged_at} for item in cached]
+        except Exception as exc:
+            # Cache failure must never block the real request
+            log.warning(f"food_parse cache read failed: {exc}")
+
+    # ── Cache miss: Claude + USDA ─────────────────────────────────────────────
     meal_type, entities = _extract_entities(text)
 
     if not entities:
@@ -238,8 +297,6 @@ def text_to_usda(text: str) -> list[dict]:
         best = _find_usda_match(normalised, raw_food)
 
         if best is None:
-            # Still include the food — log a warning but never silently drop it.
-            # usda_id=0 signals an unmatched food to the caller.
             log.warning(f"Including '{raw_food}' with usda_id=0 (no USDA match).")
             results.append({
                 "raw_food":         raw_food,
@@ -261,5 +318,31 @@ def text_to_usda(text: str) -> list[dict]:
             "weight_g":         round(weight_g, 1),
             "logged_at":        logged_at,
         })
+
+    # ── Drop minor components (< 10 % of total meal weight) ──────────────────
+    # Any food whose portion is under 10 % of the total is nutritionally
+    # negligible and adds latency (extra USDA calls) with no scoring benefit.
+    # Applied before cache write so cached entries are already filtered.
+    if results:
+        total_weight = sum(r["weight_g"] for r in results)
+        threshold    = total_weight * 0.10
+        before       = len(results)
+        results      = [r for r in results if r["weight_g"] >= threshold]
+        dropped      = before - len(results)
+        if dropped:
+            log.info(
+                f"Dropped {dropped} minor component(s) below 10 % threshold "
+                f"({threshold:.1f}g of {total_weight:.1f}g total)."
+            )
+
+    # ── Store in cache (strip logged_at — it must always be fresh) ────────────
+    if _mongo_db is not None and results:
+        try:
+            to_store = [{k: v for k, v in item.items() if k != "logged_at"}
+                        for item in results]
+            _mongo_db.set_food_parse(key, to_store)
+            log.info(f"food_parse cache SET for key={key[:12]}… ({len(to_store)} foods)")
+        except Exception as exc:
+            log.warning(f"food_parse cache write failed: {exc}")
 
     return results

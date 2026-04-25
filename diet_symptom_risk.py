@@ -95,7 +95,7 @@ def predict_symptom_risk(
 
     try:
         msg = _claude_client.messages.create(
-            model      = "claude-sonnet-4-6",
+            model      = "claude-haiku-4-5-20251001",
             max_tokens = 180,
             system     = _RISK_SYSTEM,
             messages   = [{"role": "user", "content": diet_summary}],

@@ -25,12 +25,9 @@ load_dotenv()
 _MOCK_MODE: bool = os.getenv("MOCK_MODE", "false").lower() == "true"
 
 import anthropic
-from fastapi import FastAPI, HTTPException, status, Request
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 from scorer import DigestiveInput, DigestiveResult, calculate_score
 from text_context_parser import utc_now_iso
@@ -112,9 +109,9 @@ async def lifespan(app: FastAPI):
 
 
     # ── 1. Claude client ──────────────────────────────────────────────────────
-    claude_key = os.getenv("CLAUDE_API_KEY") or os.getenv("Claude_API_key")
+    claude_key = os.getenv("CLAUDE_API_key")
     if not claude_key:
-        log.error("CLAUDE_API_KEY is missing from .env — all AI features will fail.")
+        log.error("CLAUDE_API_key is missing from .env — all AI features will fail.")
     else:
         _state.claude_client = anthropic.Anthropic(api_key=claude_key)
         log.info("Claude client ready.")
@@ -130,13 +127,19 @@ async def lifespan(app: FastAPI):
         try:
             _mongo_db_ref.connect()
             _state._mongo_db = _mongo_db_ref
-            usda_col = _mongo_db_ref._col("usda_cache")
-            log.info("MongoDB connected. USDA cache enabled.")
+            usda_col        = _mongo_db_ref._col("usda_cache")
+            usda_search_col = _mongo_db_ref._col("usda_search_cache")
+            log.info("MongoDB connected. USDA nutrient + search cache enabled.")
         except Exception as mongo_exc:
             log.warning(f"MongoDB unavailable ({mongo_exc}) — USDA cache disabled, in-process cache only.")
-            usda_col = None
+            usda_col        = None
+            usda_search_col = None
 
-        _state.usda_client = USDAClient(api_key=usda_key, mongo_col=usda_col)
+        _state.usda_client = USDAClient(
+            api_key    = usda_key,
+            mongo_col  = usda_col,
+            search_col = usda_search_col,
+        )
         _state.usda_ready  = True
         log.info("USDA client ready.")
     except Exception as exc:
@@ -146,7 +149,8 @@ async def lifespan(app: FastAPI):
     # ── 3. Food text-to-USDA pipeline ────────────────────────────────────────
     try:
         import food_text_to_usda as _ft
-        _ft.init(_state.claude_client, _state.usda_client)
+        _ft.init(_state.claude_client, _state.usda_client,
+                 mongo_db=getattr(_state, "_mongo_db", None))
         _state.text_to_usda = _ft.text_to_usda
         log.info("food_text_to_usda ready.")
     except Exception as exc:
@@ -156,7 +160,8 @@ async def lifespan(app: FastAPI):
     # ── 4. Nutrition scorer ───────────────────────────────────────────────────
     try:
         import nutrition_scorer as _ns
-        _ns.init(_state.claude_client, _state.usda_client)
+        _ns.init(_state.claude_client, _state.usda_client,
+                 mongo_db=getattr(_state, "_mongo_db", None))
         _state.analyse_food_log_batch = _ns.analyse_food_log_batch
         _state.analyse_symptom_log    = _ns.analyse_symptom_log
         _state.nutrition_ready        = True
@@ -252,25 +257,7 @@ async def lifespan(app: FastAPI):
 # FastAPI app
 # ─────────────────────────────────────────────────────────────────────────────
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Rate limiter
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _client_ip(request: Request) -> str:
-    """
-    Return the real client IP, respecting X-Forwarded-For from reverse proxies
-    (Heroku, nginx). Falls back to the direct connection address.
-    """
-    forwarded = request.headers.get("X-Forwarded-For")
-    return forwarded.split(",")[0].strip() if forwarded else request.client.host
-
-limiter = Limiter(key_func=_client_ip)
-
-
 app = FastAPI(title="Gut Health API", version="4.0.0", lifespan=lifespan)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -566,8 +553,7 @@ def _grade_summary(score: int) -> str:
 
 @app.post("/score", response_model=DigestiveResult,
           summary="Calculate onboarding digestion score (call once at onboarding)")
-@limiter.limit("60/minute")
-def score(request: Request, data: DigestiveInput) -> DigestiveResult:
+def score(data: DigestiveInput) -> DigestiveResult:
     if _MOCK_MODE:
         return _mk_mock_score()
     return calculate_score(data)
@@ -644,8 +630,7 @@ class FoodLogResponse(BaseModel):
         "and returns the updated score with a 10-12 word note."
     ),
 )
-@limiter.limit("20/minute")
-def log_food(request: Request, req: FoodLogRequest) -> FoodLogResponse:
+def log_food(req: FoodLogRequest) -> FoodLogResponse:
     if _MOCK_MODE:
         d = _mk_mock_log_food(req)
         return FoodLogResponse(**d)
@@ -746,8 +731,7 @@ class SymptomLogResponse(BaseModel):
 
 @app.post("/log/symptom", response_model=SymptomLogResponse,
           summary="Log symptoms and get an updated digestion score")
-@limiter.limit("20/minute")
-def log_symptom(request: Request, req: SymptomLogRequest) -> SymptomLogResponse:
+def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
     """
     Log one or more gut symptoms and receive an **updated digestion score**.
 
@@ -859,8 +843,7 @@ class FoodParseResponse(BaseModel):
         "score_impact, updated_score, and a gut health note."
     ),
 )
-@limiter.limit("20/minute")
-def food_parse(request: Request, req: FoodParseRequest) -> FoodParseResponse:
+def food_parse(req: FoodParseRequest) -> FoodParseResponse:
     if _MOCK_MODE:
         return FoodParseResponse(**_mk_mock_food_parse(req))
     if not _state.usda_ready:
@@ -964,8 +947,7 @@ class FoodLookupResponse(BaseModel):
 
 @app.post("/food/lookup", response_model=FoodLookupResponse,
           summary="Lookup macros for one or multiple USDA IDs, scaled to portion weight")
-@limiter.limit("60/minute")
-def food_lookup(request: Request, req: FoodLookupRequest) -> FoodLookupResponse:
+def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
     if _MOCK_MODE:
         return FoodLookupResponse(**_mk_mock_food_lookup(req))
     if not _state.usda_ready:
@@ -1045,13 +1027,19 @@ class FoodTagsResponse(BaseModel):
 
 # Claude evaluates USDA category names → insight (5-7 words) + severity
 _CATEGORY_EVAL_SYSTEM = (
-    "Gut-health dietitian AI. Rate USDA food categories for gut impact. "
-    "Return ONLY valid JSON (no markdown): "
-    '{"results":[{"category":"<n>","insight":"<5-7 words, specific gut effect>","severity":"Low|Medium|High"},...]} '
-    "Include ALL input categories in order. "
-    "Severity: Low=gut-friendly (vegetables/fruits/lean proteins/whole grains); "
-    "Medium=moderate concern (dairy/legumes/nuts/eggs); "
-    "High=significant irritant (fried/processed/fast food/sweets)."
+    "You are a clinical gut-health dietitian AI.\n\n"
+    "You will receive a list of USDA food category names with their food counts.\n"
+    "For each category, return:\n\n"
+    "  insight  — exactly 5-7 words, specific gut effect, no punctuation at end\n"
+    "             Good: 'Elevates intestinal permeability and inflammation risk'\n"
+    "             Bad:  'This is bad for your gut'\n\n"
+    "  severity — gut-health severity for most people:\n"
+    "     'Low'    → gut-friendly or neutral (vegetables, fruits, lean proteins, whole grains)\n"
+    "     'Medium' → moderate concern for sensitive individuals (dairy, eggs, legumes, nuts)\n"
+    "     'High'   → significant gut irritant (fried foods, fast food, processed snacks, sweets)\n\n"
+    "Return ONLY valid JSON — no markdown:\n"
+    '{"results": [{"category": "<name>", "insight": "<5-7 words>", "severity": "Low|Medium|High"}, ...]}\n'
+    "Include ALL categories provided, in the same order."
 )
 
 
@@ -1076,8 +1064,8 @@ def _claude_category_eval(
     )
     try:
         msg = claude_client.messages.create(
-            model      = "claude-sonnet-4-6",
-            max_tokens = 35 * len(category_counts) + 60,
+            model      = "claude-haiku-4-5-20251001",
+            max_tokens = 60 * len(category_counts) + 80,
             system     = _CATEGORY_EVAL_SYSTEM,
             messages   = [{"role": "user", "content": f"Evaluate these USDA food categories:\n\n{lines}"}],
         )
@@ -1103,8 +1091,7 @@ def _claude_category_eval(
     response_model=FoodTagsResponse,
     summary="Top USDA food categories from a food list with AI-generated gut-health insight and severity",
 )
-@limiter.limit("20/minute")
-def food_tags_batch(request: Request, req: FoodTagsRequest) -> FoodTagsResponse:
+def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
     """
     Pass a list of USDA food IDs — typically all foods linked to a user's gut
     symptoms. Each ID is resolved via the USDA API (cache-first) to get its
@@ -1278,8 +1265,7 @@ class SafeFoodResponse(BaseModel):
         "Intensity is case-insensitive."
     ),
 )
-@limiter.limit("30/minute")
-def recommend_safe_foods_endpoint(request: Request, req: FoodAnalysisRequest) -> SafeFoodResponse:
+def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
  
     if _MOCK_MODE:
         return SafeFoodResponse(**_mk_mock_safe_food(req))
@@ -1374,8 +1360,7 @@ _VALID_PREDICT_SEVERITIES = {"Mild", "Moderate", "Severe"}
         "Intensity is case-insensitive (mild/Mild/MILD all accepted)."
     ),
 )
-@limiter.limit("30/minute")
-def predict_food_symptom(request: Request, req: FoodSymptomPredictRequest) -> FoodSymptomPredictResponse:
+def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictResponse:
  
     if _MOCK_MODE:
         return FoodSymptomPredictResponse(**_mk_mock_risky_food(req))
@@ -1449,8 +1434,10 @@ class TriggersFoodResponse(BaseModel):
 
 
 _TRIGGERS_SYSTEM = (
-    "Clinical gut-health AI. Given a symptom and trigger foods, write 1 clinical sentence "
-    "of exactly 17-20 words. No markdown, no preamble. Return only the sentence."
+    "You are a clinical gut-health dietitian AI. "
+    "Given a symptom and a list of foods that trigger it, write exactly 1 lines "
+    "totalling 17-20 words. Be direct and clinical. No bullet points, no markdown, "
+    "no preamble. Return only the two lines of text, nothing else."
 )
 
 
@@ -1459,8 +1446,7 @@ _TRIGGERS_SYSTEM = (
     response_model=TriggersFoodResponse,
     summary="Get a 1-line AI insight about foods that trigger a specific symptom",
 )
-@limiter.limit("20/minute")
-def recommend_triggers_food(request: Request, req: TriggersFoodRequest) -> TriggersFoodResponse:
+def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
     if _MOCK_MODE:
         return TriggersFoodResponse(**_mk_mock_triggers_food(req))
     if _state.claude_client is None:
@@ -1506,8 +1492,7 @@ class FeedbackResponse(BaseModel):
 
 @app.post("/predict/feedback", response_model=FeedbackResponse,
           summary="Submit explicit feedback to improve personalised predictions")
-@limiter.limit("60/minute")
-def predict_feedback(request: Request, req: FeedbackRequest) -> FeedbackResponse:
+def predict_feedback(req: FeedbackRequest) -> FeedbackResponse:
     if _MOCK_MODE:
         return FeedbackResponse(**_mk_mock_feedback(req))
     if _state.memory_store is None:
@@ -1554,8 +1539,7 @@ def _personalisation_stage(weight: float) -> str:
 
 @app.get("/user/{user_id}/learning-summary", response_model=LearningSummaryResponse,
          summary="View what the model has learned about this user's food sensitivities")
-@limiter.limit("60/minute")
-def learning_summary(request: Request, user_id: str) -> LearningSummaryResponse:
+def learning_summary(user_id: str) -> LearningSummaryResponse:
     if _MOCK_MODE:
         return LearningSummaryResponse(**_mk_mock_learning_summary(user_id))
     if _state.memory_store is None:
@@ -1606,8 +1590,7 @@ class DashboardResponse(BaseModel):
 
 @app.get("/user/{user_id}/dashboard", response_model=DashboardResponse,
          summary="Full 7-day user dashboard from MongoDB")
-@limiter.limit("60/minute")
-def user_dashboard(request: Request, user_id: str) -> DashboardResponse:
+def user_dashboard(user_id: str) -> DashboardResponse:
     if _MOCK_MODE:
         d = _mk_mock_dashboard(user_id)
         return DashboardResponse(**d)
@@ -1636,8 +1619,7 @@ def user_dashboard(request: Request, user_id: str) -> DashboardResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/db/health", summary="MongoDB connection health and collection stats")
-@limiter.limit("60/minute")
-def db_health(request: Request):
+def db_health():
     if _MOCK_MODE:
         return _mk_mock_db_health()
     mongo = _state._mongo_db
@@ -1708,8 +1690,7 @@ class MealForecastResponse(BaseModel):
 
 @app.post("/predict/meal-symptom-forecast", response_model=MealForecastResponse,
           summary="Predict which symptoms a hypothetical uneaten meal might cause")
-@limiter.limit("20/minute")
-def meal_symptom_forecast(request: Request, req: MealForecastRequest) -> MealForecastResponse:
+def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
     if _MOCK_MODE:
         d = _mk_mock_forecast(req)
         forecasts = [MealSymptomForecastOut(**f) for f in d.pop("forecasts")]
@@ -1796,8 +1777,7 @@ class BarcodeResponse(BaseModel):
 
 
 @app.post("/scan/barcode", response_model=BarcodeResponse)
-@limiter.limit("30/minute")
-def scan_barcode(request: Request, req: BarcodeRequest):
+def scan_barcode(req: BarcodeRequest):
     if _MOCK_MODE:
         return BarcodeResponse(**_mk_mock_barcode(req))
     try:
@@ -1837,8 +1817,7 @@ class CulpritResponse(BaseModel):
 
 @app.post("/culprit-foods", response_model=CulpritResponse,
           summary="Find which foods most likely caused symptoms (NO user_id needed)")
-@limiter.limit("30/minute")
-def culprit_foods(request: Request, req: CulpritRequest) -> CulpritResponse:
+def culprit_foods(req: CulpritRequest) -> CulpritResponse:
     if _MOCK_MODE:
         d = _mk_mock_culprit(req)
         culprits = [CulpritFoodOut(**f) for f in d.pop("culprit_foods")]

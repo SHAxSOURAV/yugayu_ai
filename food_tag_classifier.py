@@ -113,7 +113,7 @@ def _run_claude_tags(food_description: str) -> Optional[dict[str, float]]:
         return None
     try:
         msg = _claude_client.messages.create(
-            model      = "claude-sonnet-4-6",
+            model      = "claude-haiku-4-5-20251001",
             max_tokens = 120,
             system     = _TAG_SYSTEM,
             messages   = [{"role": "user", "content": food_description}],

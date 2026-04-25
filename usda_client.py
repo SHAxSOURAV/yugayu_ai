@@ -102,23 +102,52 @@ def _extract_nutrients(food_nutrients: list[dict]) -> dict[str, Optional[float]]
 class USDAClient:
     """
     Thread-safe USDA FoodData Central client with MongoDB nutrient cache.
-    Pass mongo_col=None to disable caching (useful for tests).
+    Pass mongo_col=None to disable nutrient caching.
+    Pass search_col=None to disable search result caching.
     """
 
-    def __init__(self, api_key: str, mongo_col=None):
-        self._key = api_key
-        self._col = mongo_col          # pymongo Collection or None
-        self._http = httpx.Client(timeout=10.0)
-        self._mem: dict[int, dict] = {}   # in-process memory cache
+    def __init__(self, api_key: str, mongo_col=None, search_col=None):
+        self._key        = api_key
+        self._col        = mongo_col           # pymongo Collection or None (nutrient cache)
+        self._search_col = search_col          # pymongo Collection or None (search cache)
+        self._http       = httpx.Client(timeout=10.0)
+        self._mem:        dict[int, dict] = {}  # in-process nutrient cache
+        self._search_mem: dict[str, list] = {}  # in-process search cache
 
     # ── Public: search ────────────────────────────────────────────────────────
 
     def search(self, query: str, top_k: int = 3) -> list[dict]:
         """
         Search USDA FDC by food name.
-        Returns list of {fdc_id, description, similarity} dicts.
-        'similarity' is the API relevance score normalised to 0–1.
+        Returns list of {rank, usda_id, usda_description, similarity} dicts.
+
+        Cache strategy (two layers):
+          1. In-process dict  — zero latency, lives for the process lifetime
+          2. MongoDB          — survives restarts, shared across workers
+          3. USDA API         — only reached on a true cold miss
+
+        Results are permanent: "Chicken, broiler, breast, cooked, roasted"
+        will always resolve to the same FDC ID.
         """
+        norm_query = " ".join(query.lower().split())  # normalise before key lookup
+
+        # 1. In-process cache
+        if norm_query in self._search_mem:
+            return self._search_mem[norm_query]
+
+        # 2. MongoDB cache
+        if self._search_col is not None:
+            try:
+                doc = self._search_col.find_one(
+                    {"query": norm_query}, {"_id": 0, "query": 0, "cached_at": 0}
+                )
+                if doc and doc.get("results"):
+                    self._search_mem[norm_query] = doc["results"]
+                    return doc["results"]
+            except Exception as exc:
+                log.warning(f"USDA search cache read failed: {exc}")
+
+        # 3. USDA API
         try:
             resp = self._http.get(
                 f"{_BASE}/foods/search",
@@ -139,17 +168,33 @@ class USDAClient:
         if not foods:
             return []
 
-        # Normalise scores to 0–1
         max_score = max((f.get("score", 1.0) for f in foods), default=1.0) or 1.0
-
-        results = []
-        for rank, f in enumerate(foods[:top_k], 1):
-            results.append({
+        results = [
+            {
                 "rank":             rank,
                 "usda_id":          int(f["fdcId"]),
                 "usda_description": f.get("description", ""),
                 "similarity":       round(f.get("score", max_score) / max_score, 4),
-            })
+            }
+            for rank, f in enumerate(foods[:top_k], 1)
+        ]
+
+        # Store in both caches
+        self._search_mem[norm_query] = results
+        if self._search_col is not None:
+            try:
+                self._search_col.update_one(
+                    {"query": norm_query},
+                    {"$set": {
+                        "query":     norm_query,
+                        "results":   results,
+                        "cached_at": __import__("datetime").datetime.utcnow().isoformat(),
+                    }},
+                    upsert=True,
+                )
+            except Exception as exc:
+                log.warning(f"USDA search cache write failed: {exc}")
+
         return results
 
     # ── Public: get_nutrients ─────────────────────────────────────────────────
