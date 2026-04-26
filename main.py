@@ -1635,6 +1635,246 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/food_trigger_check
+# ─────────────────────────────────────────────────────────────────────────────
+
+import hashlib as _hashlib2
+
+_TRIGGER_NOTE_SYSTEM = (
+    "You are a concise gut-health coach. "
+    "Write exactly ONE sentence (15-22 words) explaining why a specific food "
+    "may trigger specific symptoms, based on its nutritional content. "
+    "Be specific and warm. No markdown, no preamble, no lists. Return only the sentence."
+)
+
+
+class FoodTriggerCheckRequest(BaseModel):
+    predictions: dict[str, list[str]] = Field(
+        ...,
+        description="Symptom → list of food names (output from /recommend/risky_food)",
+        example={
+            "Heartburn": ["Fish"],
+            "Bloating":  ["Beans"],
+            "Gas":       ["Beans", "Egg"],
+            "Fatigue":   ["Nuts + Snacks", "Chicken + Rice"],
+        },
+    )
+    target_food: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Food name to check (case-insensitive, partial match supported)",
+        example="Egg",
+    )
+
+
+class SymptomRiskDetail(BaseModel):
+    symptom:          str
+    nutrient_risk:    float   # 0-1 from SYMPTOM_NUTRIENT_RISK logic
+    keyword_risk:     float   # 0-1 from _FOOD_RISK_KEYWORDS heuristic
+    combined_risk:    float   # weighted blend
+    risk_level:       str     # Low / Moderate / High
+    risk_nutrients:   list[str]  # which nutrients are over threshold
+
+
+class FoodTriggerCheckResponse(BaseModel):
+    target_food:          str
+    usda_description:     str         # resolved USDA name (or food name if not found)
+    triggered_count:      int         # x — symptoms where this food appeared
+    total_symptoms:       int         # y — total symptoms in predictions
+    triggered_symptoms:   list[str]   # which symptoms the food appeared in
+    symptom_risks:        list[SymptomRiskDetail]  # nutrient risk per triggered symptom
+    note:                 str         # one Claude Haiku sentence
+    cached:               bool
+
+
+def _risk_level_label(score: float) -> str:
+    if score >= 0.60: return "High"
+    if score >= 0.35: return "Moderate"
+    return "Low"
+
+
+def _build_nutrient_snapshot_from_usda(
+    data: dict, portion_g: float = 100.0
+) -> "NutrientSnapshot":
+    """Build NutrientSnapshot from usda_client.get_nutrients() result at 100g."""
+    from food_symptom_predictor import NutrientSnapshot
+    def sv(k):
+        v = data.get(k)
+        return round(float(v), 3) if v is not None else None
+    return NutrientSnapshot(
+        description  = data.get("description", ""),
+        calories     = sv("calories"),   protein  = sv("protein"),
+        total_fat    = sv("total_fat"),  carbs    = sv("carbs"),
+        sodium       = sv("sodium"),     sat_fat  = sv("sat_fat"),
+        cholesterol  = sv("cholesterol"),sugar    = sv("sugar"),
+        portion_g    = portion_g,
+    )
+
+
+@app.post(
+    "/recommend/food_trigger_check",
+    response_model=FoodTriggerCheckResponse,
+    summary="Check how many symptoms a specific food triggered and why (nutrient-based, no Claude except 1-sentence note)",
+    description=(
+        "Pass the predictions dict from /recommend/risky_food and a target food name. "
+        "Returns x/y symptom count, per-symptom nutrient risk scores from USDA data, "
+        "and one Claude Haiku sentence summarising the finding. "
+        "All risk scoring is pure logic — no Claude for analysis."
+    ),
+)
+def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse:
+
+    if _MOCK_MODE:
+        return FoodTriggerCheckResponse(
+            target_food="Egg", usda_description="Egg, whole, raw",
+            triggered_count=1, total_symptoms=4,
+            triggered_symptoms=["Gas"],
+            symptom_risks=[SymptomRiskDetail(
+                symptom="Gas", nutrient_risk=0.32, keyword_risk=0.0,
+                combined_risk=0.32, risk_level="Low", risk_nutrients=[],
+            )],
+            note="Eggs are generally gentle on the gut but can cause mild gas in sensitive individuals.",
+            cached=False,
+        )
+
+    if not _state.usda_ready:
+        raise HTTPException(503, f"USDA client unavailable: {_state.usda_error or 'unknown'}")
+
+    target = req.target_food.strip()
+    target_lower = target.lower()
+
+    # ── Step 1: find which symptoms contain the target food (substring match) ──
+    triggered_symptoms: list[str] = []
+    for symptom, foods in req.predictions.items():
+        for food in foods:
+            if target_lower in food.lower() or food.lower() in target_lower:
+                triggered_symptoms.append(symptom)
+                break
+
+    total_symptoms   = len(req.predictions)
+    triggered_count  = len(triggered_symptoms)
+
+    # ── Step 2: USDA search → get nutrients (uses existing search cache) ───────
+    usda_data        = None
+    usda_description = target
+    usda_matches     = _state.usda_client.search(target, top_k=1)
+
+    if usda_matches:
+        best_id  = usda_matches[0]["usda_id"]
+        usda_data = _state.usda_client.get_nutrients(best_id)
+        if usda_data:
+            usda_description = usda_data.get("description", target)
+
+    # Build NutrientSnapshot at 100g baseline
+    if usda_data:
+        nutrients = _build_nutrient_snapshot_from_usda(usda_data, portion_g=100.0)
+    else:
+        from food_symptom_predictor import NutrientSnapshot
+        nutrients = NutrientSnapshot(description=target, portion_g=100.0)
+
+    # ── Step 3: pure-logic risk scoring per triggered symptom ─────────────────
+    from food_symptom_predictor import _nutrient_risk, _keyword_risk_score
+
+    symptom_risks: list[SymptomRiskDetail] = []
+    for symptom in triggered_symptoms:
+        n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
+        k_risk             = _keyword_risk_score(usda_description, symptom)
+        # weighted blend: nutrient data is primary when available
+        if usda_data:
+            combined = round(n_risk * 0.70 + k_risk * 0.30, 4)
+        else:
+            # no USDA data — rely entirely on keyword heuristic
+            combined = round(k_risk, 4)
+
+        symptom_risks.append(SymptomRiskDetail(
+            symptom       = symptom,
+            nutrient_risk = round(n_risk, 4),
+            keyword_risk  = round(k_risk, 4),
+            combined_risk = combined,
+            risk_level    = _risk_level_label(combined),
+            risk_nutrients= risk_notes,
+        ))
+
+    # Sort by combined risk descending
+    symptom_risks.sort(key=lambda r: r.combined_risk, reverse=True)
+
+    # ── Step 4: build compact summary for Claude (not the raw logs) ────────────
+    top_symptom   = symptom_risks[0].symptom if symptom_risks else (triggered_symptoms[0] if triggered_symptoms else "no symptoms")
+    top_nutrients = symptom_risks[0].risk_nutrients[:2] if symptom_risks else []
+
+    nutrient_hint = (
+        f" Key nutrients involved: {'; '.join(top_nutrients)}." if top_nutrients else ""
+    )
+    summary = (
+        f"Food: {usda_description}. "
+        f"Triggered {triggered_count} out of {total_symptoms} tracked symptoms "
+        f"({', '.join(triggered_symptoms) if triggered_symptoms else 'none'}). "
+        f"Highest risk symptom: {top_symptom}.{nutrient_hint}"
+    )
+
+    # ── Step 5: cache key based on compact summary (not raw input) ─────────────
+    cache_key  = _hashlib2.sha256(summary.encode()).hexdigest()
+    mongo_db   = getattr(_state, "_mongo_db", None)
+
+    if mongo_db is not None:
+        try:
+            cached_note = mongo_db.get_gentle_note(cache_key)
+            if cached_note:
+                log.info(f"food_trigger_check cache HIT key={cache_key[:12]}…")
+                return FoodTriggerCheckResponse(
+                    target_food       = target,
+                    usda_description  = usda_description,
+                    triggered_count   = triggered_count,
+                    total_symptoms    = total_symptoms,
+                    triggered_symptoms= triggered_symptoms,
+                    symptom_risks     = symptom_risks,
+                    note              = cached_note,
+                    cached            = True,
+                )
+        except Exception as exc:
+            log.warning(f"food_trigger_check cache read failed: {exc}")
+
+    # ── Step 6: Claude Haiku — one sentence only ───────────────────────────────
+    if _state.claude_client is None:
+        note = (
+            f"{target} appeared in {triggered_count} of {total_symptoms} tracked symptoms."
+        )
+    else:
+        try:
+            msg = _state.claude_client.messages.create(
+                model      = "claude-haiku-4-5-20251001",
+                max_tokens = 60,
+                system     = _TRIGGER_NOTE_SYSTEM,
+                messages   = [{"role": "user", "content": summary}],
+            )
+            note = msg.content[0].text.strip().strip('"')
+        except Exception as exc:
+            log.exception("food_trigger_check — Claude call failed")
+            note = (
+                f"{target} appeared in {triggered_count} of {total_symptoms} tracked symptoms."
+            )
+
+    # ── Step 7: store in cache ────────────────────────────────────────────────
+    if mongo_db is not None:
+        try:
+            mongo_db.set_gentle_note(cache_key, note)
+            log.info(f"food_trigger_check cache SET key={cache_key[:12]}…")
+        except Exception as exc:
+            log.warning(f"food_trigger_check cache write failed: {exc}")
+
+    return FoodTriggerCheckResponse(
+        target_food        = target,
+        usda_description   = usda_description,
+        triggered_count    = triggered_count,
+        total_symptoms     = total_symptoms,
+        triggered_symptoms = triggered_symptoms,
+        symptom_risks      = symptom_risks,
+        note               = note,
+        cached             = False,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 9 — POST /predict/feedback
 # ─────────────────────────────────────────────────────────────────────────────
 
