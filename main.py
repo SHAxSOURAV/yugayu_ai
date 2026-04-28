@@ -1875,6 +1875,206 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/symptom_culprit
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SymptomCulpritRequest(BaseModel):
+    food_logs:    List[FoodLogInput]    = Field(
+        default_factory=list,
+        description="Food entries (usda_id + weight_g + logged_at)",
+    )
+    symptom_logs: List[SymptomLogInput] = Field(
+        ...,
+        min_length=1,
+        max_length=1,
+        description="Exactly one symptom event to investigate (symptom + intensity + logged_at)",
+    )
+
+
+class CulpritFoodDetail(BaseModel):
+    usda_id:       int
+    food_name:     str
+    weight_g:      float
+    hours_before:  float   # how many hours before the symptom this food was eaten
+    nutrient_risk: float   # 0-1 from SYMPTOM_NUTRIENT_RISK logic
+    keyword_risk:  float   # 0-1 from _FOOD_RISK_KEYWORDS heuristic
+    combined_risk: float   # weighted blend
+    risk_level:    str     # Low / Moderate / High
+    risk_nutrients: list[str]
+
+
+class SymptomCulpritResponse(BaseModel):
+    symptom:          str
+    intensity:        str
+    culprit_foods:    list[int]              # just the usda_ids as requested
+    culprit_details:  list[CulpritFoodDetail]
+    foods_in_window:  int
+    foods_scanned:    int
+    message:          str
+
+
+# Digestion windows in MINUTES (from culprit_food_finder.py)
+_CULPRIT_WINDOW: dict[str, tuple[int, int]] = {
+    "Heartburn": (15, 180), "Acid Reflux": (15, 180),
+    "Bloating":  (30, 480), "Gas":         (30, 480),
+    "Nausea":    (30, 240), "Cramps":      (30, 480),
+    "Abdominal Pain": (30, 480), "Diarrhea": (60, 960),
+    "Constipation":  (720, 2880), "Fatigue": (60, 720),
+}
+_CULPRIT_DEFAULT_WINDOW = (30, 480)
+
+
+@app.post(
+    "/recommend/symptom_culprit",
+    response_model=SymptomCulpritResponse,
+    summary="Given food logs and one symptom event, identify which foods likely caused it",
+    description=(
+        "Filters foods eaten within the clinical digestion window before the symptom, "
+        "then ranks them by nutrient-risk + keyword-risk scores using USDA data. "
+        "Zero Claude calls — pure logic only."
+    ),
+)
+def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
+
+    symptom   = req.symptom_logs[0].symptom.strip()
+    intensity = _normalise_intensity(req.symptom_logs[0].intensity)
+    sym_time  = req.symptom_logs[0].logged_at
+    # ensure timezone-aware
+    if sym_time.tzinfo is None:
+        sym_time = sym_time.replace(tzinfo=timezone.utc)
+
+    # ── No food logs provided ────────────────────────────────────────────────
+    if not req.food_logs:
+        return SymptomCulpritResponse(
+            symptom          = symptom,
+            intensity        = intensity,
+            culprit_foods    = [],
+            culprit_details  = [],
+            foods_in_window  = 0,
+            foods_scanned    = 0,
+            message          = "No food logs provided. Cannot identify culprit foods.",
+        )
+
+    # ── Step 1: filter foods within the clinical digestion window ─────────────
+    win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)  # minutes
+
+    candidates: list[dict] = []
+    for fl in req.food_logs:
+        food_time = fl.logged_at
+        if food_time.tzinfo is None:
+            food_time = food_time.replace(tzinfo=timezone.utc)
+        delta_minutes = (sym_time - food_time).total_seconds() / 60.0
+        if win_min <= delta_minutes <= win_max:
+            candidates.append({
+                "usda_id":      fl.usda_id,
+                "weight_g":     fl.weight_g,
+                "logged_at":    fl.logged_at,
+                "hours_before": round(delta_minutes / 60.0, 2),
+            })
+
+    foods_scanned   = len(req.food_logs)
+    foods_in_window = len(candidates)
+
+    if not candidates:
+        win_h_min = round(win_min / 60, 1)
+        win_h_max = round(win_max / 60, 1)
+        return SymptomCulpritResponse(
+            symptom          = symptom,
+            intensity        = intensity,
+            culprit_foods    = [],
+            culprit_details  = [],
+            foods_in_window  = 0,
+            foods_scanned    = foods_scanned,
+            message          = (
+                f"No food was eaten within the clinical digestion window "
+                f"({win_h_min}–{win_h_max} hours) before this {symptom} event. "
+                f"Scanned {foods_scanned} food log(s)."
+            ),
+        )
+
+    # ── Step 2: resolve USDA descriptions (search cache → MongoDB → API) ──────
+    if not _state.usda_ready:
+        raise HTTPException(503, f"USDA client unavailable: {_state.usda_error or 'unknown'}")
+
+    name_cache: dict[int, str] = {}
+    for c in candidates:
+        uid = c["usda_id"]
+        if uid not in name_cache:
+            name_cache[uid] = _state.usda_client.get_description(uid)
+
+    # ── Step 3: nutrient-risk + keyword-risk per candidate ────────────────────
+    from food_symptom_predictor import (
+        NutrientSnapshot, _nutrient_risk, _keyword_risk_score,
+    )
+
+    scored: list[CulpritFoodDetail] = []
+    for c in candidates:
+        uid       = c["usda_id"]
+        food_name = name_cache[uid]
+        weight_g  = c["weight_g"]
+
+        # Fetch USDA nutrients (3-tier cache: in-process → MongoDB → API)
+        usda_data = _state.usda_client.get_nutrients(uid)
+        if usda_data:
+            scale = weight_g / 100.0
+            def sv(k):
+                v = usda_data.get(k)
+                return round(float(v) * scale, 3) if v is not None else None
+            nutrients = NutrientSnapshot(
+                description  = food_name,
+                calories     = sv("calories"),    protein  = sv("protein"),
+                total_fat    = sv("total_fat"),   carbs    = sv("carbs"),
+                sodium       = sv("sodium"),      sat_fat  = sv("sat_fat"),
+                cholesterol  = sv("cholesterol"), sugar    = sv("sugar"),
+                portion_g    = weight_g,
+            )
+            n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
+            k_risk             = _keyword_risk_score(food_name, symptom)
+            combined           = round(n_risk * 0.70 + k_risk * 0.30, 4)
+        else:
+            # No USDA data — keyword heuristic only
+            nutrients  = NutrientSnapshot(description=food_name, portion_g=weight_g)
+            n_risk     = 0.0
+            risk_notes = []
+            k_risk     = _keyword_risk_score(food_name, symptom)
+            combined   = round(k_risk, 4)
+
+        scored.append(CulpritFoodDetail(
+            usda_id       = uid,
+            food_name     = food_name,
+            weight_g      = weight_g,
+            hours_before  = c["hours_before"],
+            nutrient_risk = round(n_risk, 4),
+            keyword_risk  = round(k_risk, 4),
+            combined_risk = combined,
+            risk_level    = _risk_level_label(combined),
+            risk_nutrients= risk_notes,
+        ))
+
+    # ── Step 4: sort by combined_risk descending ──────────────────────────────
+    scored.sort(key=lambda x: x.combined_risk, reverse=True)
+
+    culprit_ids = [d.usda_id for d in scored]
+
+    win_h_min = round(win_min / 60, 1)
+    win_h_max = round(win_max / 60, 1)
+    message = (
+        f"Found {foods_in_window} food(s) eaten within the {symptom} digestion window "
+        f"({win_h_min}–{win_h_max} hours before symptom) out of {foods_scanned} scanned. "
+        f"Ranked by nutrient-risk + keyword-risk using USDA data. Zero Claude calls."
+    )
+
+    return SymptomCulpritResponse(
+        symptom          = symptom,
+        intensity        = intensity,
+        culprit_foods    = culprit_ids,
+        culprit_details  = scored,
+        foods_in_window  = foods_in_window,
+        foods_scanned    = foods_scanned,
+        message          = message,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 9 — POST /predict/feedback
 # ─────────────────────────────────────────────────────────────────────────────
 
