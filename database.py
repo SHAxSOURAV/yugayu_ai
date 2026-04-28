@@ -108,6 +108,11 @@ class _MongoClient:
         # Permanent — same trigger pattern always produces equivalent advice
         self._col("gentle_note_cache").create_index("cache_key", unique=True)
 
+        # composite_food_cache: maps a parse cache_key → user's original food name
+        # e.g. "chicken biryani" → [171477, 169708, ...]
+        # Permanent — user-given names never change for the same input text
+        self._col("composite_food_cache").create_index("cache_key", unique=True)
+
         log.info("MongoDB indexes ensured.")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -457,6 +462,41 @@ class _MongoClient:
                 "cache_key": cache_key,
                 "note":      note,
                 "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COMPOSITE FOOD CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_composite_food_name(self, cache_key: str) -> Optional[str]:
+        """
+        Return the user's original food name for a composite parse result, or None.
+        e.g. "chicken biryani" when usda_ids=[171477, 169708].
+        """
+        doc = self._col("composite_food_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0, "user_given_name": 1}
+        )
+        return doc["user_given_name"] if doc else None
+
+    def set_composite_food_name(
+        self,
+        cache_key:       str,
+        user_given_name: str,
+        usda_ids:        list,
+    ) -> None:
+        """
+        Store the mapping: parse cache_key → user's original food name + usda_ids.
+        Called when a single food text resolves to 2+ USDA IDs (composite dish).
+        """
+        self._col("composite_food_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key":       cache_key,
+                "user_given_name": user_given_name,
+                "usda_ids":        usda_ids,
+                "cached_at":       datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
         )

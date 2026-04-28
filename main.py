@@ -11,6 +11,7 @@ USDA:    FoodData Central REST API via USDA_API_KEY from .env
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import time
@@ -625,13 +626,14 @@ class FoodLogItem(BaseModel):
 
 
 class FoodLogResponse(BaseModel):
-    updated_score:    int
-    food_detected:    int
-    logged_at:        str
-    normalised_names: List[str]
-    results:          List[FoodLogItem]
-    meal_type:        str
-    note:             str
+    updated_score:        int
+    food_detected:        int
+    logged_at:            str
+    normalised_names:     List[str]
+    results:              List[FoodLogItem]
+    meal_type:            str
+    note:                 str
+    users_given_food_name: Optional[str] = None
 
 
 @app.post(
@@ -699,12 +701,33 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
     score_impact  = _calculate_score_impact(raw_score, req.current_score)
     updated_score = max(_SCORE_FLOOR, min(_SCORE_CEIL, req.current_score + score_impact))
 
+    # ── Step 4: composite food detection + cache ──────────────────────────────
+    # All items from one parse call share the same logged_at — if there are 2+
+    # items they came from decomposing one composite dish (e.g. "chicken biryani").
+    # Store the user's original food name so future responses can surface it.
+    users_given_food_name: Optional[str] = None
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is not None:
+        cache_key = hashlib.sha256(
+            " ".join(combined_text.lower().split()).encode()
+        ).hexdigest()
+        try:
+            if len(raw) >= 2:
+                mongo_db.set_composite_food_name(
+                    cache_key       = cache_key,
+                    user_given_name = req.foods.strip(),
+                    usda_ids        = [r["usda_id"] for r in raw],
+                )
+            users_given_food_name = mongo_db.get_composite_food_name(cache_key)
+        except Exception as exc:
+            log.warning(f"composite_food_cache error: {exc}")
+
     return FoodLogResponse(
-        updated_score    = updated_score,
-        food_detected    = len(raw),
-        logged_at        = logged_at,
-        normalised_names = normalised_names,
-        results          = [
+        updated_score         = updated_score,
+        food_detected         = len(raw),
+        logged_at             = logged_at,
+        normalised_names      = normalised_names,
+        results               = [
             FoodLogItem(
                 normalised_name = r["normalised_name"].split(",")[0].strip(),
                 usda_id         = r["usda_id"],
@@ -712,8 +735,9 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
             )
             for r in raw
         ],
-        meal_type = req.meal_type,
-        note      = note,
+        meal_type             = req.meal_type,
+        note                  = note,
+        users_given_food_name = users_given_food_name,
     )
 # ENDPOINT 4 — POST /log/symptom
 # ─────────────────────────────────────────────────────────────────────────────
@@ -839,14 +863,15 @@ class FoodParseItem(BaseModel):
 
 
 class FoodParseResponse(BaseModel):
-    Food_detected:    int
-    Logged_at:        str
-    normalised_names: List[str]
-    results:          List[FoodParseItem]
-    meal_type:        Optional[str] = None
-    score_impact:     Optional[int] = None
-    updated_score:    Optional[int] = None
-    note:             Optional[str] = None
+    Food_detected:         int
+    Logged_at:             str
+    normalised_names:      List[str]
+    results:               List[FoodParseItem]
+    meal_type:             Optional[str] = None
+    score_impact:          Optional[int] = None
+    updated_score:         Optional[int] = None
+    note:                  Optional[str] = None
+    users_given_food_name: Optional[str] = None
 
 
 @app.post(
@@ -899,11 +924,30 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
         except Exception as exc:
             log.warning(f"food/parse scoring failed: {exc}")
 
+    # ── Composite food detection + cache ─────────────────────────────────────
+    # 2+ items from one parse call → composite dish. Store user's original text.
+    users_given_food_name: Optional[str] = None
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is not None:
+        parse_key = hashlib.sha256(
+            " ".join(req.text.lower().split()).encode()
+        ).hexdigest()
+        try:
+            if len(raw) >= 2:
+                mongo_db.set_composite_food_name(
+                    cache_key       = parse_key,
+                    user_given_name = req.text.strip(),
+                    usda_ids        = [r["usda_id"] for r in raw],
+                )
+            users_given_food_name = mongo_db.get_composite_food_name(parse_key)
+        except Exception as exc:
+            log.warning(f"food/parse composite_food_cache error: {exc}")
+
     return FoodParseResponse(
-        Food_detected    = len(raw),
-        Logged_at        = logged_at,
-        normalised_names = normalised_names,
-        results          = [
+        Food_detected         = len(raw),
+        Logged_at             = logged_at,
+        normalised_names      = normalised_names,
+        results               = [
             FoodParseItem(
                 normalised_name = r["normalised_name"].split(",")[0].strip(),
                 usda_id         = r["usda_id"],
@@ -911,10 +955,11 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
             )
             for r in raw
         ],
-        meal_type     = meal_type,
-        score_impact  = score_impact,
-        updated_score = updated_score,
-        note          = note,
+        meal_type             = meal_type,
+        score_impact          = score_impact,
+        updated_score         = updated_score,
+        note                  = note,
+        users_given_food_name = users_given_food_name,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
