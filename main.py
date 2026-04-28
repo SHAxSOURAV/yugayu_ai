@@ -1931,8 +1931,7 @@ class SymptomCulpritRequest(BaseModel):
     symptom_logs: List[SymptomLogInput] = Field(
         ...,
         min_length=1,
-        max_length=1,
-        description="Exactly one symptom event to investigate (symptom + intensity + logged_at)",
+        description="One or more symptom events to investigate",
     )
 
 
@@ -1968,157 +1967,173 @@ _CULPRIT_WINDOW: dict[str, tuple[int, int]] = {
 }
 _CULPRIT_DEFAULT_WINDOW = (30, 480)
 
-
 @app.post(
     "/recommend/symptom_culprit",
-    response_model=SymptomCulpritResponse,
-    summary="Given food logs and one symptom event, identify which foods likely caused it",
+    response_model=SymptomCulpritResponse,   # ← back to single object
+    summary="Given food logs and symptom events, identify which foods likely caused them",
     description=(
-        "Filters foods eaten within the clinical digestion window before the symptom, "
-        "then ranks them by nutrient-risk + keyword-risk scores using USDA data. "
+        "For each symptom log, filters foods within the clinical digestion window and ranks "
+        "them by nutrient-risk + keyword-risk. All symptoms are merged into one response. "
         "Zero Claude calls — pure logic only."
     ),
 )
 def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
 
-    symptom   = req.symptom_logs[0].symptom.strip()
-    intensity = _normalise_intensity(req.symptom_logs[0].intensity)
-    sym_time  = req.symptom_logs[0].logged_at
-    # ensure timezone-aware
-    if sym_time.tzinfo is None:
-        sym_time = sym_time.replace(tzinfo=timezone.utc)
-
-    # ── No food logs provided ────────────────────────────────────────────────
-    if not req.food_logs:
-        return SymptomCulpritResponse(
-            symptom          = symptom,
-            intensity        = intensity,
-            culprit_foods    = [],
-            culprit_details  = [],
-            foods_in_window  = 0,
-            foods_scanned    = 0,
-            message          = "No food logs provided. Cannot identify culprit foods.",
-        )
-
-    # ── Step 1: filter foods within the clinical digestion window ─────────────
-    win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)  # minutes
-
-    candidates: list[dict] = []
-    for fl in req.food_logs:
-        food_time = fl.logged_at
-        if food_time.tzinfo is None:
-            food_time = food_time.replace(tzinfo=timezone.utc)
-        delta_minutes = (sym_time - food_time).total_seconds() / 60.0
-        if win_min <= delta_minutes <= win_max:
-            candidates.append({
-                "usda_id":      fl.usda_id,
-                "weight_g":     fl.weight_g,
-                "logged_at":    fl.logged_at,
-                "hours_before": round(delta_minutes / 60.0, 2),
-            })
-
-    foods_scanned   = len(req.food_logs)
-    foods_in_window = len(candidates)
-
-    if not candidates:
-        win_h_min = round(win_min / 60, 1)
-        win_h_max = round(win_max / 60, 1)
-        return SymptomCulpritResponse(
-            symptom          = symptom,
-            intensity        = intensity,
-            culprit_foods    = [],
-            culprit_details  = [],
-            foods_in_window  = 0,
-            foods_scanned    = foods_scanned,
-            message          = (
-                f"No food was eaten within the clinical digestion window "
-                f"({win_h_min}–{win_h_max} hours) before this {symptom} event. "
-                f"Scanned {foods_scanned} food log(s)."
-            ),
-        )
-
-    # ── Step 2: resolve USDA descriptions (search cache → MongoDB → API) ──────
-    if not _state.usda_ready:
+    if req.food_logs and not _state.usda_ready:
         raise HTTPException(503, f"USDA client unavailable: {_state.usda_error or 'unknown'}")
 
-    name_cache: dict[int, str] = {}
-    for c in candidates:
-        uid = c["usda_id"]
-        if uid not in name_cache:
-            name_cache[uid] = _state.usda_client.get_description(uid)
-
-    # ── Step 3: nutrient-risk + keyword-risk per candidate ────────────────────
     from food_symptom_predictor import (
         NutrientSnapshot, _nutrient_risk, _keyword_risk_score,
     )
 
-    scored: list[CulpritFoodDetail] = []
-    for c in candidates:
-        uid       = c["usda_id"]
-        food_name = name_cache[uid]
-        weight_g  = c["weight_g"]
+    # ── Pre-cache USDA lookups once across all symptoms ───────────────────────
+    name_cache:     dict[int, str]  = {}
+    nutrient_cache: dict[int, dict] = {}
 
-        # Fetch USDA nutrients (3-tier cache: in-process → MongoDB → API)
-        usda_data = _state.usda_client.get_nutrients(uid)
-        if usda_data:
-            scale = weight_g / 100.0
-            def sv(k):
-                v = usda_data.get(k)
-                return round(float(v) * scale, 3) if v is not None else None
-            nutrients = NutrientSnapshot(
-                description  = food_name,
-                calories     = sv("calories"),    protein  = sv("protein"),
-                total_fat    = sv("total_fat"),   carbs    = sv("carbs"),
-                sodium       = sv("sodium"),      sat_fat  = sv("sat_fat"),
-                cholesterol  = sv("cholesterol"), sugar    = sv("sugar"),
-                portion_g    = weight_g,
-            )
-            n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
-            k_risk             = _keyword_risk_score(food_name, symptom)
-            combined           = round(n_risk * 0.70 + k_risk * 0.30, 4)
-        else:
-            # No USDA data — keyword heuristic only
-            nutrients  = NutrientSnapshot(description=food_name, portion_g=weight_g)
-            n_risk     = 0.0
-            risk_notes = []
-            k_risk     = _keyword_risk_score(food_name, symptom)
-            combined   = round(k_risk, 4)
+    if req.food_logs and _state.usda_ready:
+        for fl in req.food_logs:
+            uid = fl.usda_id
+            if uid not in name_cache:
+                name_cache[uid]     = _state.usda_client.get_description(uid)
+                nutrient_cache[uid] = _state.usda_client.get_nutrients(uid) or {}
 
-        scored.append(CulpritFoodDetail(
-            usda_id       = uid,
-            food_name     = food_name,
-            weight_g      = weight_g,
-            hours_before  = c["hours_before"],
-            nutrient_risk = round(n_risk, 4),
-            keyword_risk  = round(k_risk, 4),
-            combined_risk = combined,
-            risk_level    = _risk_level_label(combined),
-            risk_nutrients= risk_notes,
-        ))
+    foods_scanned = len(req.food_logs)
 
-    # ── Step 4: sort by combined_risk descending ──────────────────────────────
-    scored.sort(key=lambda x: x.combined_risk, reverse=True)
+    # ── Per-symptom results ───────────────────────────────────────────────────
+    # Collected for merging: list of (symptom_str, intensity_str, scored_list, foods_in_window)
+    per_symptom_results: list[tuple[str, str, list[CulpritFoodDetail], int]] = []
 
-    culprit_ids = [d.usda_id for d in scored]
+    for sym_log in req.symptom_logs:
+        symptom   = sym_log.symptom.strip()
+        intensity = _normalise_intensity(sym_log.intensity)
+        sym_time  = sym_log.logged_at
+        if sym_time.tzinfo is None:
+            sym_time = sym_time.replace(tzinfo=timezone.utc)
 
-    win_h_min = round(win_min / 60, 1)
-    win_h_max = round(win_max / 60, 1)
-    message = (
-        f"Found {foods_in_window} food(s) eaten within the {symptom} digestion window "
-        f"({win_h_min}–{win_h_max} hours before symptom) out of {foods_scanned} scanned. "
-        f"Ranked by nutrient-risk + keyword-risk using USDA data. Zero Claude calls."
-    )
+        if not req.food_logs:
+            per_symptom_results.append((symptom, intensity, [], 0))
+            continue
+
+        win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)
+
+        candidates: list[dict] = []
+        for fl in req.food_logs:
+            food_time = fl.logged_at
+            if food_time.tzinfo is None:
+                food_time = food_time.replace(tzinfo=timezone.utc)
+            delta_minutes = (sym_time - food_time).total_seconds() / 60.0
+            if win_min <= delta_minutes <= win_max:
+                candidates.append({
+                    "usda_id":      fl.usda_id,
+                    "weight_g":     fl.weight_g,
+                    "hours_before": round(delta_minutes / 60.0, 2),
+                })
+
+        if not candidates:
+            per_symptom_results.append((symptom, intensity, [], 0))
+            continue
+
+        scored: list[CulpritFoodDetail] = []
+        for c in candidates:
+            uid       = c["usda_id"]
+            food_name = name_cache[uid]
+            weight_g  = c["weight_g"]
+            usda_data = nutrient_cache.get(uid, {})
+
+            if usda_data:
+                scale = weight_g / 100.0
+                def sv(k):
+                    v = usda_data.get(k)
+                    return round(float(v) * scale, 3) if v is not None else None
+                nutrients = NutrientSnapshot(
+                    description = food_name,
+                    calories    = sv("calories"),    protein  = sv("protein"),
+                    total_fat   = sv("total_fat"),   carbs    = sv("carbs"),
+                    sodium      = sv("sodium"),      sat_fat  = sv("sat_fat"),
+                    cholesterol = sv("cholesterol"), sugar    = sv("sugar"),
+                    portion_g   = weight_g,
+                )
+                n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
+                k_risk             = _keyword_risk_score(food_name, symptom)
+                combined           = round(n_risk * 0.70 + k_risk * 0.30, 4)
+            else:
+                nutrients  = NutrientSnapshot(description=food_name, portion_g=weight_g)
+                n_risk     = 0.0
+                risk_notes = []
+                k_risk     = _keyword_risk_score(food_name, symptom)
+                combined   = round(k_risk, 4)
+
+            scored.append(CulpritFoodDetail(
+                usda_id        = uid,
+                food_name      = food_name.split(",")[0].strip(),
+                weight_g       = weight_g,
+                hours_before   = c["hours_before"],
+                nutrient_risk  = round(n_risk, 4),
+                keyword_risk   = round(k_risk, 4),
+                combined_risk  = combined,
+                risk_level     = _risk_level_label(combined),
+                risk_nutrients = risk_notes,
+            ))
+
+        scored.sort(key=lambda x: x.combined_risk, reverse=True)
+        per_symptom_results.append((symptom, intensity, scored, len(candidates)))
+
+    # ── Merge all per-symptom results into one response ───────────────────────
+
+    # No food logs at all
+    if not req.food_logs:
+        all_symptoms   = ", ".join(s for s, _, __, ___ in per_symptom_results)
+        all_intensities = ", ".join(i for _, i, __, ___ in per_symptom_results)
+        return SymptomCulpritResponse(
+            symptom         = all_symptoms,
+            intensity       = all_intensities,
+            culprit_foods   = [],
+            culprit_details = [],
+            foods_in_window = 0,
+            foods_scanned   = 0,
+            message         = "No food logs provided. Cannot identify culprit foods.",
+        )
+
+    # Deduplicate foods across symptoms — keep the entry with the highest combined_risk
+    merged_foods: dict[int, CulpritFoodDetail] = {}
+    for _, _, scored, _ in per_symptom_results:
+        for detail in scored:
+            existing = merged_foods.get(detail.usda_id)
+            if existing is None or detail.combined_risk > existing.combined_risk:
+                merged_foods[detail.usda_id] = detail
+
+    # Sort merged foods by combined_risk descending
+    merged_details = sorted(merged_foods.values(), key=lambda x: x.combined_risk, reverse=True)
+    culprit_ids    = [d.usda_id for d in merged_details]
+
+    # Unique foods that appeared in ANY symptom window
+    total_in_window = len(merged_foods)
+
+    # Symptom and intensity labels (deduplicated, order-preserved)
+    seen_symptoms   = list(dict.fromkeys(s          for s, _, __, ___ in per_symptom_results))
+    seen_intensities = list(dict.fromkeys(i         for _, i, __, ___ in per_symptom_results))
+    symptom_label   = ", ".join(seen_symptoms)
+    intensity_label = ", ".join(seen_intensities)
+
+    # Message
+    if merged_details:
+        short_names = [d.food_name.split(",")[0].strip() for d in merged_details[:3]]
+        message = (
+            f"{', '.join(short_names)} are possible triggers for this "
+            f"{symptom_label}."
+        )
+    else:
+        message = f"No culprit foods found within the digestion windows for {symptom_label}."
 
     return SymptomCulpritResponse(
-        symptom          = symptom,
-        intensity        = intensity,
-        culprit_foods    = culprit_ids,
-        culprit_details  = scored,
-        foods_in_window  = foods_in_window,
-        foods_scanned    = foods_scanned,
-        message          = message,
+        symptom         = symptom_label,
+        intensity       = intensity_label,
+        culprit_foods   = culprit_ids,
+        culprit_details = merged_details,
+        foods_in_window = total_in_window,
+        foods_scanned   = foods_scanned,
+        message         = message,
     )
-
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 9 — POST /predict/feedback
 # ─────────────────────────────────────────────────────────────────────────────
