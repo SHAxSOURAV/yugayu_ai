@@ -126,7 +126,7 @@ Creates 3 demo users with 7-day food + symptom history. Blocked when `ENV=produc
 
 | Method | Path | Rate limit | Description |
 |---|---|---|---|
-| `POST` | `/food/parse` | 20/min | Natural meal text → USDA IDs + optional gut score |
+| `POST` | `/food/parse` | 20/min | Natural meal text → USDA IDs + optional gut score when `current_score` is provided |
 | `POST` | `/food/lookup` | 60/min | List of USDA IDs + weights → macros per food and totals |
 | `POST` | `/food/tags` | 20/min | List of USDA IDs → top USDA categories with AI gut-health insight |
 
@@ -135,8 +135,8 @@ Creates 3 demo users with 7-day food + symptom history. Blocked when `ENV=produc
 | Method | Path | Rate limit | Description |
 |---|---|---|---|
 | `POST` | `/score` | 60/min | Onboarding questionnaire → baseline gut score |
-| `POST` | `/log/food` | 20/min | Log a meal in plain text → updated score |
-| `POST` | `/log/symptom` | 20/min | Log symptoms → updated score |
+| `POST` | `/log/food` | 20/min | Log a meal in plain text → updated score (requires `current_score`) |
+| `POST` | `/log/symptom` | 20/min | Log symptoms → updated score (requires `current_score`) |
 
 ### Prediction
 
@@ -223,7 +223,7 @@ no conversation history maintained across calls.
 ### Symptom Logging (`/log/symptom`)
 1. Symptoms and severity are validated against a fixed taxonomy (10 symptoms × 3 severity levels).
 2. **Claude** scores the combined symptom picture (penalty 0–40) in a single call accounting for symptom count, severity, and the optional free-text note together.
-3. The penalty is subtracted from the current score.
+3. The raw penalty is calibrated against the same healthy 80–90 band used by food logs, so symptoms hurt more when the score is already high and less when the score is already low.
 
 ### Symptom Causation (`/recommend/risky_food`, `/predict/meal-symptom-forecast`, `/culprit-foods`)
 Pure-logic engine — **zero Claude calls:**

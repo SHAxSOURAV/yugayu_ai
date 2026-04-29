@@ -18,6 +18,8 @@ from enum import Enum
 from typing import List
 from pydantic import BaseModel, Field, field_validator
 
+_BASELINE_HEALTH_SCORE = 90
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Enums  (validated input values — prevents typos / bad data)
@@ -156,7 +158,7 @@ class Recommendation(BaseModel):
 
 
 class ScoreBreakdown(BaseModel):
-    base_score:      int = 100
+    base_score:      int = _BASELINE_HEALTH_SCORE
     age_penalty:     int
     sleep_penalty:   int
     weight_penalty:  int
@@ -186,7 +188,7 @@ def calculate_score(data: DigestiveInput) -> DigestiveResult:
     Deterministic rule-based digestive health scorer.
     Returns a DigestiveResult — no I/O, no randomness, fully testable.
     """
-    score = 100
+    score = _BASELINE_HEALTH_SCORE
     concerns:       list[Concern]        = []
     recommendations:list[Recommendation] = []
     rec_seen:       set[str]             = set()
@@ -317,7 +319,7 @@ def calculate_score(data: DigestiveInput) -> DigestiveResult:
     else:             grade, tagline = "Critical",  "Urgent attention recommended — please consult a healthcare professional."
 
     breakdown = ScoreBreakdown(
-        base_score       = 100,
+        base_score       = _BASELINE_HEALTH_SCORE,
         age_penalty      = age_pen,
         sleep_penalty    = sleep_pen,
         weight_penalty   = weight_pen,

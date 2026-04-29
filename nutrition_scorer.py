@@ -1,6 +1,6 @@
-"""
+﻿"""
 nutrition_scorer.py
-───────────────────
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Gut-health scoring engine.
 
 Rule-based nutrient scoring is 100% unchanged.
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 _claude_client = None
 _usda_client   = None
-_mongo_db      = None   # set by init() — optional, cache disabled if None
+_mongo_db      = None   # set by init() â€” optional, cache disabled if None
 
 
 def init(claude_client, usda_client, mongo_db=None) -> None:
@@ -38,9 +38,9 @@ def init(claude_client, usda_client, mongo_db=None) -> None:
     log.info(f"nutrition_scorer: Claude + USDA client ready ({status}).")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Nutrient config (unchanged from original)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _NUTRIENT_CONFIG: dict[str, dict] = {
     "protein": {
@@ -75,7 +75,7 @@ _NUTRIENT_CONFIG: dict[str, dict] = {
     },
     "vitamin_d": {
         "direction": "beneficial", "low_threshold": 1.0, "high_threshold": 5.0,
-        "max_delta": +3, "unit": "µg",
+        "max_delta": +3, "unit": "Âµg",
         "note_good": "Vitamin D supports gut barrier function and immune-microbiome regulation.",
         "note_excellent": "High Vitamin D is strongly linked to reduced intestinal permeability.",
     },
@@ -131,10 +131,10 @@ _NUTRIENT_CONFIG: dict[str, dict] = {
 
 _MEAL_MULTIPLIER = {"Breakfast": 0.85, "Lunch": 1.00, "Dinner": 1.15, "Snack": 0.90}
 _MEAL_NOTE = {
-    "Breakfast": "Breakfast multiplier (×0.85) — morning digestion is active, gut tolerates more.",
-    "Lunch":     "Lunch multiplier (×1.00) — neutral baseline context.",
-    "Dinner":    "Dinner multiplier (×1.15) — evening digestion is slower; impact amplified.",
-    "Snack":     "Snack multiplier (×0.90) — smaller portion context, slightly reduced impact.",
+    "Breakfast": "Breakfast multiplier (Ã—0.85) â€” morning digestion is active, gut tolerates more.",
+    "Lunch":     "Lunch multiplier (Ã—1.00) â€” neutral baseline context.",
+    "Dinner":    "Dinner multiplier (Ã—1.15) â€” evening digestion is slower; impact amplified.",
+    "Snack":     "Snack multiplier (Ã—0.90) â€” smaller portion context, slightly reduced impact.",
 }
 
 _UNIT_TO_GRAMS = {
@@ -150,9 +150,9 @@ def _to_grams(quantity: float, unit: str) -> float:
     return quantity * _UNIT_TO_GRAMS.get(unit.lower().strip(), 100.0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Data classes (unchanged)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @dataclass
 class NutrientProfile:
@@ -189,9 +189,9 @@ class SymptomLogScore:
     score_penalty: int; severity_note: str; time_note: str; clinical_note: str
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Nutrient scoring (unchanged pure-Python logic)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _compute_nutrient_modifier(
     profile: NutrientProfile, scale: float,
@@ -222,9 +222,9 @@ def _compute_nutrient_modifier(
             low_t = cfg["low_threshold"] * s; high_t = cfg["high_threshold"] * s
             max_d = cfg["max_delta"]
             if val >= high_t:
-                delta = max_d; note = f"✅ {val:.1f}{unit} {key.replace('_',' ')} — {cfg['note_excellent']}"; direction_label = "beneficial"
+                delta = max_d; note = f"âœ… {val:.1f}{unit} {key.replace('_',' ')} â€” {cfg['note_excellent']}"; direction_label = "beneficial"
             elif val >= low_t:
-                delta = round(max_d * 0.55); note = f"⚠ {val:.1f}{unit} {key.replace('_',' ')} — {cfg['note_good']}"; direction_label = "beneficial"
+                delta = round(max_d * 0.55); note = f"âš  {val:.1f}{unit} {key.replace('_',' ')} â€” {cfg['note_good']}"; direction_label = "beneficial"
             else:
                 continue
 
@@ -232,9 +232,9 @@ def _compute_nutrient_modifier(
             mild_t = cfg["mild_threshold"] * s; high_t = cfg["high_threshold"] * s
             max_d  = cfg["max_delta"]
             if val >= high_t:
-                delta = max_d; note = f"❌ {val:.1f}{unit} {key.replace('_',' ')} — {cfg['note_high']}"; direction_label = "harmful"
+                delta = max_d; note = f"âŒ {val:.1f}{unit} {key.replace('_',' ')} â€” {cfg['note_high']}"; direction_label = "harmful"
             elif val >= mild_t:
-                delta = round(max_d * 0.55); note = f"⚠ {val:.1f}{unit} {key.replace('_',' ')} — {cfg['note_mild']}"; direction_label = "harmful"
+                delta = round(max_d * 0.55); note = f"âš  {val:.1f}{unit} {key.replace('_',' ')} â€” {cfg['note_mild']}"; direction_label = "harmful"
             else:
                 continue
 
@@ -242,10 +242,10 @@ def _compute_nutrient_modifier(
             good_lo = cfg["good_low"] * s; good_hi = cfg["good_high"] * s
             excess  = cfg["excess_threshold"] * s
             if val > excess:
-                delta = cfg["min_delta"]; note = f"❌ {val:.1f}{unit} iron — {cfg['note_excess']}"; direction_label = "harmful"
+                delta = cfg["min_delta"]; note = f"âŒ {val:.1f}{unit} iron â€” {cfg['note_excess']}"; direction_label = "harmful"
             elif val >= good_lo:
                 delta = cfg["max_delta"] if val >= good_hi else round(cfg["max_delta"] * 0.55)
-                note  = f"✅ {val:.1f}{unit} iron — {cfg['note_good']}"; direction_label = "beneficial"
+                note  = f"âœ… {val:.1f}{unit} iron â€” {cfg['note_good']}"; direction_label = "beneficial"
             else:
                 continue
         else:
@@ -261,9 +261,9 @@ def _compute_nutrient_modifier(
     return total_delta, impacts, notes
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Claude digestibility classification (replaces DeBERTa)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _DIGESTIBILITY_SYSTEM = (
     "You are a clinical dietitian AI. Given a food description and its nutrients, "
@@ -314,7 +314,7 @@ def _run_claude_classification(desc: str, profile: NutrientProfile) -> tuple[int
 
         note = (
             f"Claude classified as '{label}' "
-            f"(confidence {confidence:.0%}) → adjustment: {delta:+d} pts"
+            f"(confidence {confidence:.0%}) â†’ adjustment: {delta:+d} pts"
         )
         return delta, label, round(confidence, 4), note
 
@@ -323,9 +323,9 @@ def _run_claude_classification(desc: str, profile: NutrientProfile) -> tuple[int
         return 0, "unknown", 0.0, f"Classification unavailable: {exc}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Public: analyse_food_log
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def analyse_food_log(
     usda_id: int, quantity: float, unit: str, meal_type: str,
@@ -393,9 +393,9 @@ def analyse_food_log_batch(
     return max(-45, min(+35, total)), results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Symptom scoring (pure Python — unchanged)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Symptom scoring (pure Python â€” unchanged)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _SYMPTOM_BASE_PENALTY: dict[str, int] = {
     "Bloating": -7, "Abdominal Pain": -12, "Nausea": -9, "Constipation": -10,
@@ -404,33 +404,33 @@ _SYMPTOM_BASE_PENALTY: dict[str, int] = {
 }
 _SEVERITY_MULT = {"Mild": 0.5, "Moderate": 1.0, "Severe": 1.65}
 _SEVERITY_NOTE = {
-    "Mild":     "Mild symptom — minor gut irritation. Monitor if recurring.",
-    "Moderate": "Moderate symptom — notable digestive stress. Track frequency.",
-    "Severe":   "Severe symptom — significant gut health signal. Consult a doctor if persistent.",
+    "Mild":     "Mild symptom â€” minor gut irritation. Monitor if recurring.",
+    "Moderate": "Moderate symptom â€” notable digestive stress. Track frequency.",
+    "Severe":   "Severe symptom â€” significant gut health signal. Consult a doctor if persistent.",
 }
 _SYMPTOM_CLINICAL: dict[str, str] = {
     "Bloating":       "Bloating suggests fermentation imbalance, gut dysbiosis, or motility issues.",
-    "Abdominal Pain": "Abdominal pain is a primary IBS/IBD indicator — warrants evaluation if recurring.",
+    "Abdominal Pain": "Abdominal pain is a primary IBS/IBD indicator â€” warrants evaluation if recurring.",
     "Nausea":         "Nausea may indicate gastritis, H. pylori, or delayed gastric emptying.",
     "Constipation":   "Constipation reflects low fibre, poor hydration, or slow gut transit time.",
-    "Heartburn":      "Heartburn indicates acid reflux / GERD — dietary + positional changes help.",
+    "Heartburn":      "Heartburn indicates acid reflux / GERD â€” dietary + positional changes help.",
     "Gas":            "Excess gas is linked to microbiome imbalance or fermentable carbohydrate intake.",
     "Fatigue":        "Post-meal fatigue indicates gut-brain axis stress or nutrient malabsorption.",
-    "Acid Reflux":    "Acid reflux indicates lower oesophageal sphincter weakness — avoid trigger foods.",
-    "Cramps":         "Gut cramps suggest intestinal spasm — possibly IBS, infection, or food sensitivity.",
-    "Diarrhea":       "Diarrhea severely disrupts absorption and electrolytes — urgent hydration needed.",
+    "Acid Reflux":    "Acid reflux indicates lower oesophageal sphincter weakness â€” avoid trigger foods.",
+    "Cramps":         "Gut cramps suggest intestinal spasm â€” possibly IBS, infection, or food sensitivity.",
+    "Diarrhea":       "Diarrhea severely disrupts absorption and electrolytes â€” urgent hydration needed.",
 }
 
 
 def _time_context(hour: int) -> tuple[float, str]:
     if 22 <= hour or hour < 6:
-        return 1.30, "Nocturnal symptom (10 PM–6 AM) — sleep disruption × 1.30 amplifier applied."
+        return 1.30, "Nocturnal symptom (10 PMâ€“6 AM) â€” sleep disruption Ã— 1.30 amplifier applied."
     elif 6 <= hour < 10:
-        return 1.08, "Morning symptom (6–10 AM) — may reflect overnight gut activity or fasting irritation."
+        return 1.08, "Morning symptom (6â€“10 AM) â€” may reflect overnight gut activity or fasting irritation."
     elif 18 <= hour < 22:
-        return 1.12, "Evening symptom (6–10 PM) — slower post-dinner digestion × 1.12 amplifier applied."
+        return 1.12, "Evening symptom (6â€“10 PM) â€” slower post-dinner digestion Ã— 1.12 amplifier applied."
     else:
-        return 1.0, "Daytime symptom — standard gut stress context (no time amplifier)."
+        return 1.0, "Daytime symptom â€” standard gut stress context (no time amplifier)."
 
 
 def analyse_symptom_log(symptom: str, severity: str, logged_at: datetime) -> SymptomLogScore:
@@ -451,18 +451,18 @@ def analyse_symptom_log(symptom: str, severity: str, logged_at: datetime) -> Sym
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# score_meal_claude — single-call gut health score for a parsed meal
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# score_meal_claude â€” single-call gut health score for a parsed meal
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _MEAL_SCORE_SYSTEM = """\
 You are a clinical gut health dietitian AI evaluating a meal's overall impact
 on gut health. You receive a list of foods with their weights and the meal type.
 
 Assess three things:
-1. Nutritional quality — fibre, fat, sugar, sodium, protein balance
-2. Meal timing appropriateness — is this food right for this time of day?
-3. Specific gut risks — fried food, spicy food, high fat at dinner, etc.
+1. Nutritional quality â€” fibre, fat, sugar, sodium, protein balance
+2. Meal timing appropriateness â€” is this food right for this time of day?
+3. Specific gut risks â€” fried food, spicy food, high fat at dinner, etc.
 
 MEAL TIMING RULES:
 - Breakfast: Light, easily digestible foods ideal. Fried or heavy = penalise.
@@ -471,19 +471,16 @@ MEAL TIMING RULES:
 - Snack: Light portions ideal. High sugar or heavy snacks penalised.
 
 SCORING GUIDE (-5 to +5 integer):
-+5  Excellent — gut-friendly, perfectly timed, anti-inflammatory
++5  Excellent â€” gut-friendly, perfectly timed, anti-inflammatory
 +3/+4  Good foods, well-timed, minor concerns only
-+1/+2  Decent — some positives, mild concerns
- 0  Neutral — mixed bag, roughly cancels out
--1/-2  Problematic elements — some gut irritants present
--3/-4  Clearly gut-unfriendly — fried/high-fat/high-sugar/poorly timed
--5  Very harmful — multiple gut stressors combined badly
++1/+2  Decent â€” some positives, mild concerns
+ 0  Neutral â€” mixed bag, roughly cancels out
+-1/-2  Problematic elements â€” some gut irritants present
+-3/-4  Clearly gut-unfriendly â€” fried/high-fat/high-sugar/poorly timed
+-5  Very harmful â€” multiple gut stressors combined badly
 
-Return ONLY valid JSON — no markdown, no explanation:
-{
-  "raw_score": <integer -5 to +5>,
-  "note": "<exactly 10 to 12 words, clinically warm, specific to this meal>"
-}
+Return ONLY valid JSON â€” no markdown, no explanation:
+{"raw_score": <integer -5 to +5>}
 """
 
 
@@ -505,61 +502,48 @@ def _meal_score_cache_key(foods: list[dict], meal_type: str) -> str:
 def score_meal_claude(
     foods: list[dict],   # [{usda_description, weight_g}, ...]
     meal_type: str,
-) -> tuple[int, str]:
+) -> int:
     """
     Evaluate the gut health impact of a parsed meal via Claude.
 
     Cache strategy (MongoDB):
       - Key: SHA-256 of sorted food descriptions + rounded weights + meal_type.
-      - On HIT:  return cached (raw_score, note) instantly — zero Claude call.
+      - On HIT:  return cached raw_score instantly - zero Claude call.
       - On MISS: call Claude, store result, return.
       - Weights rounded to nearest 10g so "chicken 158g" and "chicken 162g"
         share one cache entry without affecting scoring accuracy meaningfully.
-
-    Parameters
-    ----------
-    foods     : list of {usda_description: str, weight_g: float}
-    meal_type : "Breakfast" | "Lunch" | "Dinner" | "Snack"
-
-    Returns
-    -------
-    (raw_score, note)
-        raw_score : int in [-5, +5]
-        note      : 10-12 word plain-English gut health observation
     """
     if _claude_client is None:
-        return 0, "Scoring unavailable — Claude client not initialised."
+        return 0
 
     food_lines = "\n".join(
-        f"  - {f.get('usda_description', 'Unknown food')} — {f.get('weight_g', 0):.0f}g"
+        f"  - {f.get('usda_description', 'Unknown food')} - {f.get('weight_g', 0):.0f}g"
         for f in foods
         if f.get("weight_g", 0) > 0
     )
     if not food_lines:
-        return 0, "No foods to evaluate."
+        return 0
 
-    # ── Cache lookup ──────────────────────────────────────────────────────────
     cache_key = _meal_score_cache_key(foods, meal_type)
     if _mongo_db is not None:
         try:
             cached = _mongo_db.get_meal_score(cache_key)
-            if cached:
-                log.info(f"meal_score cache HIT for key={cache_key[:12]}…")
-                return cached   # (raw_score, note)
+            if cached is not None:
+                log.info(f"meal_score cache HIT for key={cache_key[:12]}...")
+                return cached
         except Exception as exc:
             log.warning(f"meal_score cache read failed: {exc}")
 
-    # ── Cache miss: Claude call ───────────────────────────────────────────────
     user_msg = (
         f"Meal type: {meal_type}\n"
         f"Foods consumed:\n{food_lines}\n\n"
-        f"Return the JSON score and note."
+        f"Return the JSON raw_score only."
     )
 
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 120,
+            max_tokens = 32,
             system     = _MEAL_SCORE_SYSTEM,
             messages   = [{"role": "user", "content": user_msg}],
         )
@@ -570,89 +554,70 @@ def score_meal_claude(
 
         raw_score = int(data.get("raw_score", 0))
         raw_score = max(-5, min(+5, raw_score))
-        note      = str(data.get("note", "Meal evaluated.")).strip()
 
-        # ── Store in cache ────────────────────────────────────────────────────
         if _mongo_db is not None:
             try:
-                _mongo_db.set_meal_score(cache_key, raw_score, note)
-                log.info(f"meal_score cache SET for key={cache_key[:12]}…")
+                _mongo_db.set_meal_score(cache_key, raw_score)
+                log.info(f"meal_score cache SET for key={cache_key[:12]}...")
             except Exception as exc:
                 log.warning(f"meal_score cache write failed: {exc}")
 
-        return raw_score, note
+        return raw_score
 
     except Exception as exc:
         log.warning(f"score_meal_claude failed: {exc}")
-        return 0, "Unable to evaluate meal at this time."
+        return 0
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Claude symptom log scorer
 # Replaces all rule-based per-symptom penalty tables.
-# Single call → (penalty: int 0-40, note: str 7-10 words)
-# ─────────────────────────────────────────────────────────────────────────────
+# Single call â†’ penalty: int 0-40
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _SYMPTOM_SCORE_SYSTEM = """\
 You are a digestive health scoring AI. A user has reported gut symptoms.
-Generate a penalty score (0–40) that will be subtracted from their digestion score,
-and a short clinical note (7–10 words exactly) summarising what was reported.
+Generate a penalty score (0-40) that will be subtracted from their digestion score.
 
-PENALTY SCALE — commit to it precisely:
-  • 1 symptom, Mild, no note           →  3–5
-  • 1 symptom, Moderate, no note       →  6–9
-  • 1 symptom, Severe, no note         → 10–13
-  • 2–3 symptoms, Moderate, no note    → 10–16
-  • 4–6 symptoms, Moderate, no note    → 17–24
-  • 7–9 symptoms, Severe, no note      → 25–32
-  • 10–12 symptoms, Severe + bad note  → 33–40
-
-NOTE RULES:
-  • Exactly 7–10 words. No more, no less.
-  • Clinical, neutral tone. No exclamation marks.
-  • Must reference why the dominant symptom or severity may appear.
-  • Example: "Severe bloating are may be caused by high-fat intake."
+PENALTY SCALE - commit to it precisely:
+  - 1 symptom, Mild           ->  3-5
+  - 1 symptom, Moderate       ->  6-9
+  - 1 symptom, Severe         -> 10-13
+  - 2-3 symptoms, Moderate    -> 10-16
+  - 4-6 symptoms, Moderate    -> 17-24
+  - 7-9 symptoms, Severe      -> 25-32
+  - 10-12 symptoms, Severe    -> 33-40
 
 Return ONLY valid JSON, no markdown:
-{"penalty": <integer 0-40>, "note": "<7-10 word string>"}
+{"penalty": <integer 0-40>}
 """
 
 
 def score_symptom_log_claude(
     symptoms: list[str],
     severity: str,
-    note:     Optional[str],
-) -> tuple[int, str]:
+) -> int:
     """
     Call Claude to score a symptom log entry.
 
     Returns
     -------
-    (penalty, note_text)
-      penalty   : int in [0, 40] — subtracted from current score
-      note_text : 7–10 word clinical summary string
+    penalty : int in [0, 40] - subtracted from current score
     """
     if _claude_client is None:
-        # Deterministic fallback if Claude is unavailable
         base = {"Mild": 4, "Moderate": 8, "Severe": 13}.get(severity, 6)
-        penalty = min(40, base * max(1, len(symptoms)))
-        return penalty, f"{severity.lower()} {symptoms[0].lower()} and related symptoms reported."
+        return min(40, base * max(1, len(symptoms)))
 
     symptom_str = ", ".join(symptoms) if symptoms else "unspecified"
-    note_str    = f'User note: "{note.strip()}"' if note and note.strip() else "No additional note."
-
     user_msg = (
         f"Symptoms reported: {symptom_str}\n"
         f"Severity: {severity}\n"
         f"Number of symptoms: {len(symptoms)}\n"
-        f"{note_str}\n\n"
-        f"Return the JSON penalty and note."
+        f"Return the JSON penalty only."
     )
 
     try:
         msg = _claude_client.messages.create(
             model      = "claude-sonnet-4-6",
-            max_tokens = 80,
+            max_tokens = 32,
             system     = _SYMPTOM_SCORE_SYSTEM,
             messages   = [{"role": "user", "content": user_msg}],
         )
@@ -661,13 +626,9 @@ def score_symptom_log_claude(
             raw = raw.split("```")[1].lstrip("json").strip()
         data    = json.loads(raw)
         penalty = int(data.get("penalty", 5))
-        penalty = max(0, min(40, penalty))          # hard clamp to [0, 40]
-        note_out = str(data.get("note", "")).strip()
-        if not note_out:
-            note_out = f"{severity.lower()} {symptoms[0].lower()} symptoms logged by user."
-        return penalty, note_out
+        return max(0, min(40, penalty))
 
     except Exception as exc:
         log.warning(f"score_symptom_log_claude failed: {exc}")
         base = {"Mild": 4, "Moderate": 8, "Severe": 13}.get(severity, 6)
-        return min(40, base * max(1, len(symptoms))), "Symptom scoring temporarily unavailable, defaults applied."
+        return min(40, base * max(1, len(symptoms)))

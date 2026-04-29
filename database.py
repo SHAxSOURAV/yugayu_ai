@@ -137,6 +137,28 @@ class _MongoClient:
         doc = self._col("users").find_one({"user_id": user_id}, {"_id": 0})
         return doc
 
+    def set_user_score(self, user_id: str, current_score: int, grade: str) -> None:
+        """
+        Persist the user's latest current_score + grade.
+        Creates a minimal user shell on first write if the profile does not exist yet.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self._col("users").update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "current_score": int(current_score),
+                    "grade": grade,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "created_at": now,
+                    "name": "Unknown",
+                },
+            },
+            upsert=True,
+        )
+
     def list_users(self) -> list[dict]:
         return list(self._col("users").find({}, {"_id": 0}))
 
@@ -419,25 +441,20 @@ class _MongoClient:
     # MEAL SCORE CACHE
     # ══════════════════════════════════════════════════════════════════════════
 
-    def get_meal_score(self, cache_key: str) -> Optional[tuple]:
-        """
-        Return (raw_score: int, note: str) for cache_key, or None on miss.
-        """
+    def get_meal_score(self, cache_key: str) -> Optional[int]:
+        """Return cached raw_score for cache_key, or None on miss."""
         doc = self._col("meal_score_cache").find_one(
             {"cache_key": cache_key}, {"_id": 0}
         )
-        if doc:
-            return doc["raw_score"], doc["note"]
-        return None
+        return int(doc["raw_score"]) if doc and "raw_score" in doc else None
 
-    def set_meal_score(self, cache_key: str, raw_score: int, note: str) -> None:
-        """Persist a meal score result."""
+    def set_meal_score(self, cache_key: str, raw_score: int) -> None:
+        """Persist a meal raw_score result."""
         self._col("meal_score_cache").update_one(
             {"cache_key": cache_key},
             {"$set": {
                 "cache_key": cache_key,
                 "raw_score": raw_score,
-                "note":      note,
                 "cached_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
