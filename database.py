@@ -103,6 +103,7 @@ class _MongoClient:
         # meal_score_cache: Claude meal score keyed by SHA-256 of foods+meal_type
         # Permanent — same foods at same weights for same meal type always score the same
         self._col("meal_score_cache").create_index("cache_key", unique=True)
+        self._col("score_behaviour_cache").create_index("cache_key", unique=True)
 
         # gentle_note_cache: one-sentence Claude note keyed by SHA-256 of trigger summary
         # Permanent — same trigger pattern always produces equivalent advice
@@ -463,6 +464,30 @@ class _MongoClient:
     # ══════════════════════════════════════════════════════════════════════════
     # GENTLE NOTE CACHE
     # ══════════════════════════════════════════════════════════════════════════
+
+    def get_score_behaviour(self, cache_key: str) -> Optional[int]:
+        """Return cached deterministic score-helper value for cache_key, or None."""
+        doc = self._col("score_behaviour_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0, "value": 1}
+        )
+        if not doc or "value" not in doc:
+            return None
+        try:
+            return int(doc["value"])
+        except (TypeError, ValueError):
+            return None
+
+    def set_score_behaviour(self, cache_key: str, value: int) -> None:
+        """Persist a deterministic score-helper value."""
+        self._col("score_behaviour_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
+                "value": int(value),
+                "cached_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
 
     def get_gentle_note(self, cache_key: str) -> Optional[str]:
         """Return cached gentle note string, or None on miss."""

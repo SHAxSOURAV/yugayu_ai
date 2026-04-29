@@ -11,6 +11,7 @@ USDA:    FoodData Central REST API via USDA_API_KEY from .env
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import time
@@ -580,138 +581,307 @@ def score(data: DigestiveInput) -> DigestiveResult:
 _VALID_MEAL_TYPES = {"Breakfast", "Lunch", "Dinner", "Snack"}
 _SCORE_FLOOR      = 0
 _SCORE_CEIL       = 100
-_HEALTHY_BAND_LOW = 80
+_HEALTHY_BAND_LOW = 70
 _HEALTHY_BAND_HIGH = 90
-_HEALTHY_TARGET_SCORE = 85
+_HEALTHY_TARGET_SCORE = 82
 
 
 def _clamp_score(score: float) -> int:
     return max(_SCORE_FLOOR, min(_SCORE_CEIL, int(round(score))))
 
 
-def _score_band_drift(current_score: int) -> int:
-    """
-    Gently pull repeated daily logs toward the healthy steady-state band so
-    normal adults trend around 80-90 instead of sticking at hard extremes.
-    """
+def _positive_score_multiplier(current_score: int) -> float:
     clamped = _clamp_score(current_score)
-    if clamped >= 96:
-        return -2
-    if clamped > _HEALTHY_BAND_HIGH:
-        return -1
-    if clamped <= 72:
-        return 2
-    if clamped < _HEALTHY_BAND_LOW:
-        return 1
-    return 0
+    if clamped <= 30:
+        return 1.0
+    if clamped <= 40:
+        return 0.8
+    if clamped <= 50:
+        return 0.6
+    if clamped <= 60:
+        return 0.5
+    if clamped <= 70:
+        return 0.4
+    if clamped <= 80:
+        return 0.2
+    return 0.1
+
+
+def _negative_score_multiplier(current_score: int) -> float:
+    clamped = _clamp_score(current_score)
+    if clamped >= 90:
+        return 1.0
+    if clamped >= 80:
+        return 0.8
+    if clamped >= 70:
+        return 0.6
+    if clamped >= 60:
+        return 0.5
+    if clamped >= 50:
+        return 0.4
+    if clamped >= 40:
+        return 0.2
+    return 0.1
+
+
+def _neutral_score_drift(current_score: int) -> int:
+    return 1 if _clamp_score(current_score) <= _HEALTHY_TARGET_SCORE else -1
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _scaled_nutrient(food_data: dict, key: str, weight_g: float) -> float:
+    if weight_g <= 0:
+        return 0.0
+    return _safe_float(food_data.get(key)) * (weight_g / 100.0)
+
+
+def _score_behaviour_cache_key(kind: str, *parts: str) -> str:
+    payload = "|".join([kind, *parts])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _get_score_behaviour_cache(cache_key: str) -> Optional[int]:
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is None or not hasattr(mongo_db, "get_score_behaviour"):
+        return None
+    try:
+        return mongo_db.get_score_behaviour(cache_key)
+    except Exception as exc:
+        log.warning(f"score behaviour cache read failed: {exc}")
+        return None
+
+
+def _set_score_behaviour_cache(cache_key: str, value: int) -> None:
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is None or not hasattr(mongo_db, "set_score_behaviour"):
+        return
+    try:
+        mongo_db.set_score_behaviour(cache_key, value)
+    except Exception as exc:
+        log.warning(f"score behaviour cache write failed: {exc}")
+
+
+def _food_balance_from_name(name: str, weight_g: float) -> float:
+    text = (name or "").lower()
+    positive = 0.0
+    negative = 0.0
+
+    if any(word in text for word in ("fruit", "vegetable", "salad", "bean", "lentil", "oat", "yogurt", "fish", "chicken", "egg")):
+        positive += 1.5
+    if any(word in text for word in ("banana", "apple", "broccoli", "spinach", "carrot", "sweet potato", "brown rice")):
+        positive += 1.0
+
+    if any(word in text for word in ("fried", "burger", "pizza", "chips", "cookie", "cake", "pastry", "candy", "soda", "cola", "oil", "butter", "cream")):
+        negative += 2.0
+    if weight_g >= 250 and any(word in text for word in ("fried", "pizza", "burger", "cake", "soda", "oil")):
+        negative += 1.0
+
+    return positive - negative
+
+
+def _food_balance_from_usda(item: dict) -> float:
+    weight_g = max(0.0, _safe_float(item.get("weight_g")))
+    fallback_name = str(item.get("usda_description") or item.get("normalised_name") or "")
+    if weight_g <= 0:
+        return 0.0
+
+    usda_client = getattr(_state, "usda_client", None)
+    usda_id = int(_safe_float(item.get("usda_id")))
+    if usda_client is None or usda_id <= 0:
+        return _food_balance_from_name(fallback_name, weight_g)
+
+    food_data = usda_client.get_nutrients(usda_id)
+    if not food_data:
+        return _food_balance_from_name(fallback_name, weight_g)
+
+    desc_blob = f"{food_data.get('description', '')} {food_data.get('food_category', '')}".lower()
+    protein = _scaled_nutrient(food_data, "protein", weight_g)
+    fiber = _scaled_nutrient(food_data, "fiber", weight_g)
+    potassium = _scaled_nutrient(food_data, "potassium", weight_g)
+    vitamin_c = _scaled_nutrient(food_data, "vitamin_c", weight_g)
+    calcium = _scaled_nutrient(food_data, "calcium", weight_g)
+    iron = _scaled_nutrient(food_data, "iron", weight_g)
+    sodium = _scaled_nutrient(food_data, "sodium", weight_g)
+    sat_fat = _scaled_nutrient(food_data, "sat_fat", weight_g)
+    sugar = _scaled_nutrient(food_data, "sugar", weight_g)
+    carbs = _scaled_nutrient(food_data, "carbs", weight_g)
+    total_fat = _scaled_nutrient(food_data, "total_fat", weight_g)
+    calories = _scaled_nutrient(food_data, "calories", weight_g)
+
+    score = 0.0
+
+    if protein >= 18:
+        score += 3.0
+    elif protein >= 8:
+        score += 1.5
+
+    if fiber >= 7:
+        score += 3.0
+    elif fiber >= 3:
+        score += 1.5
+
+    if potassium >= 350:
+        score += 1.0
+    elif potassium >= 200:
+        score += 0.5
+
+    if vitamin_c >= 15:
+        score += 1.0
+    if calcium >= 120:
+        score += 0.5
+    if 1.5 <= iron <= 12:
+        score += 0.5
+
+    if any(word in desc_blob for word in ("fruit", "vegetable", "bean", "lentil", "pea", "broccoli", "spinach", "carrot", "banana", "apple", "oat", "brown rice", "sweet potato")):
+        score += 0.75
+    if protein >= 20 and sat_fat <= 3 and sodium < 300:
+        score += 0.75
+
+    if sodium >= 700:
+        score -= 3.0
+    elif sodium >= 350:
+        score -= 1.5
+
+    if sat_fat >= 8:
+        score -= 3.0
+    elif sat_fat >= 4:
+        score -= 1.5
+
+    if sugar >= 18 and fiber < 3 and protein < 5:
+        score -= 3.0
+    elif sugar >= 10 and fiber < 2 and protein < 3:
+        score -= 1.5
+
+    if carbs >= 60 and fiber < 4 and protein < 8:
+        score -= 3.0
+    elif carbs >= 40 and fiber < 3 and protein < 6:
+        score -= 1.5
+
+    if total_fat >= 20 and fiber < 5 and protein < 12:
+        score -= 2.0
+    elif total_fat >= 12 and fiber < 4 and protein < 8:
+        score -= 1.0
+
+    if calories >= 450 and fiber < 4 and protein < 15:
+        score -= 2.0
+
+    if "fried" in desc_blob:
+        score -= 1.5
+    if any(word in desc_blob for word in ("soft drink", "soda", "cola", "candy", "cookie", "cake", "pastry", "chips")):
+        score -= 2.5
+    if "oil" in desc_blob and weight_g >= 10:
+        score -= 2.0
+
+    return score
 
 
 def _calculate_score_impact(base_modifier: int, current_score: int) -> int:
-    """
-    Apply food-log score impact in a way that keeps the long-run steady state
-    inside the healthy 80-90 band.
-
-    Positive meals help more when the score is below the target band and less
-    when it is already high. Negative meals hurt more when the user is above
-    the target band. Neutral meals cause only gentle drift back toward the
-    healthy range.
-    """
-    clamped = _clamp_score(current_score)
-    drift = _score_band_drift(clamped)
-
     if base_modifier == 0:
-        return drift
+        return _neutral_score_drift(current_score)
 
-    if base_modifier > 0:
-        multiplier = 0.60 + max(0.0, (_HEALTHY_TARGET_SCORE - clamped) / 25.0)
-    else:
-        multiplier = 0.70 + max(0.0, (clamped - _HEALTHY_TARGET_SCORE) / 22.0)
-
-    multiplier = max(0.35, min(1.35, multiplier))
-    impact = int(round(base_modifier * multiplier))
-    if impact == 0:
-        impact = 1 if base_modifier > 0 else -1
-
-    if base_modifier > 0:
-        impact += drift
-    else:
-        impact += min(drift, 0)
-
-    if impact == 0 and base_modifier != 0 and drift == 0:
-        return 1 if base_modifier > 0 else -1
-    return impact
+    multiplier = (
+        _positive_score_multiplier(current_score)
+        if base_modifier > 0
+        else _negative_score_multiplier(current_score)
+    )
+    impact = max(1, int(round(abs(base_modifier) * multiplier)))
+    return impact if base_modifier > 0 else -impact
 
 
 def _meal_score_modifier(raw_items: list[dict], meal_type: str) -> int:
-    """
-    Use the nutrition_scorer batch analyser as the single meal scoring engine.
-    The analyser returns a wider batch modifier; compress it to a stable
-    per-meal base modifier before the neutralising multiplier is applied.
-    Keep any non-zero raw meal signal alive so mildly good/bad meals still
-    move the score by at least one point.
-    """
-    analyse_batch = getattr(_state, "analyse_food_log_batch", None)
-    if not callable(analyse_batch) or not raw_items:
+    if not raw_items:
         return 0
 
-    items = [
-        {
-            "usda_id": item["usda_id"],
-            "quantity": item["weight_g"],
-            "unit": "g",
-        }
-        for item in raw_items
-    ]
-    try:
-        total_modifier, _ = analyse_batch(items, meal_type)
-    except Exception as exc:
-        log.warning(f"meal batch scoring failed: {exc}")
-        return 0
+    cache_parts = [meal_type.lower()]
+    for item in sorted(
+        raw_items,
+        key=lambda entry: (
+            int(_safe_float(entry.get("usda_id"))),
+            str(entry.get("usda_description") or entry.get("normalised_name") or "").lower(),
+        ),
+    ):
+        rounded_weight = int(round(_safe_float(item.get("weight_g")) / 10.0) * 10)
+        cache_parts.append(
+            f"{int(_safe_float(item.get('usda_id')))}:{rounded_weight}:{str(item.get('usda_description') or item.get('normalised_name') or '').lower()}"
+        )
 
-    base_modifier = int(round(total_modifier / 4))
-    if total_modifier != 0 and base_modifier == 0:
-        base_modifier = 1 if total_modifier > 0 else -1
-    return max(-12, min(12, base_modifier))
+    cache_key = _score_behaviour_cache_key("meal-score-v2", *cache_parts)
+    cached = _get_score_behaviour_cache(cache_key)
+    if cached is not None:
+        return max(-10, min(10, int(cached)))
+
+    meal_balance = sum(_food_balance_from_usda(item) for item in raw_items)
+    if meal_type == "Dinner":
+        meal_balance *= 1.15 if meal_balance < 0 else 0.95
+    elif meal_type == "Snack":
+        meal_balance *= 0.85
+    elif meal_type == "Breakfast" and meal_balance < 0:
+        meal_balance *= 1.05
+
+    if abs(meal_balance) < 0.35:
+        modifier = 0
+    else:
+        strength = max(1, min(10, int(round(abs(meal_balance) * 1.8))))
+        modifier = strength if meal_balance > 0 else -strength
+
+    _set_score_behaviour_cache(cache_key, modifier)
+    return modifier
+
+
+def _symptom_time_bucket(logged_at: datetime) -> str:
+    hour = logged_at.hour
+    if 22 <= hour or hour < 6:
+        return "night"
+    if 6 <= hour < 10:
+        return "morning"
+    if 18 <= hour < 22:
+        return "evening"
+    return "day"
 
 
 def _symptom_score_penalty(symptoms: List[str], severity: str, logged_at: datetime) -> int:
-    """
-    Use the nutrition_scorer per-symptom analyser, then derive one batch penalty
-    that grows sublinearly with symptom count. This raw penalty is calibrated
-    again against the user's current score before being applied.
-    """
     analyse_symptom = getattr(_state, "analyse_symptom_log", None)
     if not callable(analyse_symptom):
         raise RuntimeError("Symptom scoring engine unavailable.")
 
+    deduped_symptoms = sorted({symptom.strip() for symptom in symptoms if symptom.strip()})
+    cache_key = _score_behaviour_cache_key(
+        "symptom-score-v2",
+        severity.lower(),
+        _symptom_time_bucket(logged_at),
+        *[symptom.lower() for symptom in deduped_symptoms],
+    )
+    cached = _get_score_behaviour_cache(cache_key)
+    if cached is not None:
+        return max(0, min(40, int(cached)))
+
     penalties = [
         max(0, -analyse_symptom(symptom, severity, logged_at).score_penalty)
-        for symptom in symptoms
+        for symptom in deduped_symptoms
     ]
     if not penalties:
         return 0
 
     mean_penalty = sum(penalties) / len(penalties)
     combined_penalty = mean_penalty * sqrt(len(penalties))
-    return max(0, min(40, int(round(combined_penalty))))
+    raw_penalty = max(0, min(40, int(round(combined_penalty))))
+    _set_score_behaviour_cache(cache_key, raw_penalty)
+    return raw_penalty
 
 
 def _calculate_symptom_penalty(raw_penalty: int, current_score: int) -> int:
-    """
-    Convert raw symptom severity into an actual score deduction using the same
-    healthy-band calibration as food logs.
-    """
     if raw_penalty <= 0:
-        return 0
+        return 1
 
-    clamped = _clamp_score(current_score)
-    severity_multiplier = 0.35 + (clamped / 180.0)
-    penalty = int(round(raw_penalty * severity_multiplier))
-
-    if clamped > _HEALTHY_BAND_HIGH:
-        penalty += abs(_score_band_drift(clamped))
-
-    return max(1, min(25, penalty))
+    base_strength = max(1, min(10, int(round(raw_penalty / 4.0))))
+    penalty = int(round(base_strength * _negative_score_multiplier(current_score)))
+    return max(1, min(10, penalty))
 
 
 def _persist_score_update(
@@ -1058,7 +1228,7 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
     updated_score: Optional[int] = None
     meal_type_for_log = meal_type or "Lunch"
 
-    if current_score is not None and callable(getattr(_state, "analyse_food_log_batch", None)):
+    if current_score is not None:
         base_modifier = _meal_score_modifier(raw, meal_type_for_log)
         score_impact  = _calculate_score_impact(base_modifier, current_score)
         updated_score = _clamp_score(current_score + score_impact)
