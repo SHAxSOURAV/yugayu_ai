@@ -2155,11 +2155,10 @@ class FoodNoteRequest(BaseModel):
 
 
 class FoodNoteResponse(BaseModel):
-    target_food:      str
-    usda_description: Optional[str]  = None   # resolved USDA name, if found
-    case:             str            # "with_symptoms" | "no_symptoms" | "no_logs"
-    note:             str
-    cached:           bool
+    target_food: str
+    case:        str    # "with_symptoms" | "no_symptoms" | "no_logs"
+    note:        str
+    cached:      bool
 
 
 def _food_name_key(name: str) -> str:
@@ -2187,16 +2186,32 @@ def _resolve_food_name_to_usda(
         except Exception as exc:
             log.warning(f"food_name_usda_cache read failed: {exc}")
 
-    # 2. USDA search (hits usda_search_cache → API internally)
+    # 2. USDA search — top_k=3, then pick the match whose description most
+    #    closely matches the user's food name (shortest description length
+    #    is a reliable proxy for "plain" food vs processed variant).
+    #    E.g. "Rice" → prefer "Rice, white, long-grain, cooked" over "Rice crackers"
     if not _state.usda_ready:
         return None, None
 
-    matches = _state.usda_client.search(food_name, top_k=1)
+    matches = _state.usda_client.search(food_name, top_k=3)
     if not matches:
         return None, None
 
-    usda_id   = matches[0]["usda_id"]
-    usda_desc = matches[0]["usda_description"]
+    # Score each candidate: prefer descriptions where the query appears as a
+    # standalone word (not part of a compound like "Rice crackers").
+    food_name_lower = food_name.lower().strip()
+
+    def _match_score(desc: str) -> tuple:
+        dl = desc.lower()
+        words = dl.replace(",", " ").split()
+        # Exact word match in description is best
+        exact = food_name_lower in words
+        # Shorter description = less processed / more generic
+        return (not exact, len(desc))
+
+    best = min(matches, key=lambda m: _match_score(m["usda_description"]))
+    usda_id   = best["usda_id"]
+    usda_desc = best["usda_description"]
 
     if mongo_db is not None:
         try:
@@ -2225,10 +2240,10 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
     if _MOCK_MODE:
         return FoodNoteResponse(
-            target_food="chicken", usda_description="Chicken, broiler, breast",
-            case="with_symptoms",
-            note="chicken is a Poultry type food that triggered Heartburn about 2 times in the last 3 months.",
-            cached=False,
+            target_food = "chicken",
+            case        = "with_symptoms",
+            note        = "Maybe 'chicken' triggered Heartburn about 2 times in the last 30 days.",
+            cached      = False,
         )
 
     mongo_db   = getattr(_state, "_mongo_db", None)
@@ -2238,14 +2253,13 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     # ── CASE 3: no food logs at all ──────────────────────────────────────────
     if not req.food_logs:
         return FoodNoteResponse(
-            target_food      = target,
-            usda_description = None,
-            case             = "no_logs",
-            note             = (
+            target_food = target,
+            case        = "no_logs",
+            note        = (
                 f"You don't have enough food logs to analyse '{target}' yet. "
                 f"Start logging meals to get personalised gut-health insights."
             ),
-            cached           = False,
+            cached      = False,
         )
 
     # ── Resolve target_food → USDA (database first, then USDA API) ───────────
@@ -2270,15 +2284,16 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     date_start  = timestamps[0]
     date_end    = timestamps[-1]
     delta_days  = max(1, (date_end - date_start).days)
-    months_span = round(delta_days / 30.1, 1)
-    months_label = f"{months_span} month{'s' if months_span != 1.0 else ''}"
+    days_label  = f"{delta_days} day{'s' if delta_days != 1 else ''}"
 
     # ── CASE 2: food_logs present but NO symptom_logs ─────────────────────────
     if not req.symptom_logs:
 
-        # Build cache key: target_usda + frequency bucket (avoids stale notes)
-        freq_bucket  = target_count // 5  # groups 0-4, 5-9, 10-14 … into one cache slot
-        note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}"
+        # Build cache key: target_usda + frequency bucket + days bucket
+        # days_label is baked into the note so it must be part of the key
+        freq_bucket  = target_count // 5
+        days_bucket  = delta_days // 7   # bucket per week so nearby dates share cache
+        note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}|d={days_bucket}"
         note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
 
         if mongo_db is not None:
@@ -2287,7 +2302,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
                 if cached_note:
                     return FoodNoteResponse(
                         target_food      = target,
-                        usda_description = target_usda_desc,
                         case             = "no_symptoms",
                         note             = cached_note,
                         cached           = True,
@@ -2297,7 +2311,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
         # Get food category tag (reuses food_tag_classifier)
         category = "food"
-        if _state.ftc_ready and target_usda_id:
+        if target_usda_id:
             try:
                 from food_tag_classifier import classify_food_tags
                 tag_result = classify_food_tags(target_usda_id)
@@ -2339,8 +2353,8 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
         # Claude Haiku — one sentence, 15-18 words
         summary = (
-            f"Food: {target_usda_desc or target} (category: {category}). "
-            f"Eaten {target_count} times in {months_label}. "
+            f"Food: {target} (category: {category}). "
+            f"Eaten {target_count} times in {days_label}. "
             f"Top likely gut symptom based on nutrients: {top_symptom}. "
             f"No symptoms have been logged yet by this user."
         )
@@ -2370,7 +2384,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
         return FoodNoteResponse(
             target_food      = target,
-            usda_description = target_usda_desc,
             case             = "no_symptoms",
             note             = note,
             cached           = False,
@@ -2411,7 +2424,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
     # Get food category
     category = "food"
-    if _state.ftc_ready and target_usda_id:
+    if target_usda_id:
         try:
             from food_tag_classifier import classify_food_tags
             tag_result = classify_food_tags(target_usda_id)
@@ -2419,9 +2432,11 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         except Exception:
             pass
 
-    # Build cache key and check cache
+    # Build cache key — include days_bucket so different date ranges
+    # never share a cached note (days_label is baked into the note text)
+    days_bucket   = delta_days // 7
     sym_sig       = "|".join(sorted(matched_symptoms.keys()))
-    note_key_raw  = f"with_symptoms|{target_usda_id or target_low}|{sym_sig}|{trigger_count}"
+    note_key_raw  = f"with_symptoms|{target_usda_id or target_low}|{sym_sig}|{trigger_count}|d={days_bucket}"
     note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
 
     if mongo_db is not None:
@@ -2430,7 +2445,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             if cached_note:
                 return FoodNoteResponse(
                     target_food      = target,
-                    usda_description = target_usda_desc,
                     case             = "with_symptoms",
                     note             = cached_note,
                     cached           = True,
@@ -2441,17 +2455,14 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     # Build deterministic note — zero Claude
     if trigger_count == 0:
         note = (
-            f"'{target}' is a {category} type food eaten {target_count} time"
-            f"{'s' if target_count != 1 else ''} in the last {months_label}, "
-            f"but it was not found within the digestion window before any of your "
+            f"'{target}' did not appear within the digestion window before any of your "
             f"{len(req.symptom_logs)} logged symptom event"
-            f"{'s' if len(req.symptom_logs) != 1 else ''}."
+            f"{'s' if len(req.symptom_logs) != 1 else ''} in the last {days_label}."
         )
     else:
         note = (
-            f"'{target}' is a {category} type food that triggered {top_sym} "
-            f"about {trigger_count} time{'s' if trigger_count != 1 else ''} "
-            f"in the last {months_label}."
+            f"Maybe '{target}' triggered {top_sym} about {trigger_count} "
+            f"time{'s' if trigger_count != 1 else ''} in the last {days_label}."
         )
 
     if mongo_db is not None:
@@ -2462,7 +2473,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
     return FoodNoteResponse(
         target_food      = target,
-        usda_description = target_usda_desc,
         case             = "with_symptoms",
         note             = note,
         cached           = False,
