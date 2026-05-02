@@ -103,7 +103,6 @@ class _MongoClient:
         # meal_score_cache: Claude meal score keyed by SHA-256 of foods+meal_type
         # Permanent — same foods at same weights for same meal type always score the same
         self._col("meal_score_cache").create_index("cache_key", unique=True)
-        self._col("score_behaviour_cache").create_index("cache_key", unique=True)
 
         # gentle_note_cache: one-sentence Claude note keyed by SHA-256 of trigger summary
         # Permanent — same trigger pattern always produces equivalent advice
@@ -113,6 +112,14 @@ class _MongoClient:
         # e.g. "chicken biryani" → [171477, 169708, ...]
         # Permanent — user-given names never change for the same input text
         self._col("composite_food_cache").create_index("cache_key", unique=True)
+
+        # food_name_usda_cache: maps normalized food_name text → usda_id + description
+        # Permanent — "chicken" always resolves to the same USDA ID
+        self._col("food_name_usda_cache").create_index("name_key", unique=True)
+
+        # food_note_cache: caches /recommend/food_note responses
+        # Key: SHA-256 of (target_food_normalized + symptom_signature + frequency)
+        self._col("food_note_cache").create_index("cache_key", unique=True)
 
         log.info("MongoDB indexes ensured.")
 
@@ -137,28 +144,6 @@ class _MongoClient:
     def get_user(self, user_id: str) -> Optional[dict]:
         doc = self._col("users").find_one({"user_id": user_id}, {"_id": 0})
         return doc
-
-    def set_user_score(self, user_id: str, current_score: int, grade: str) -> None:
-        """
-        Persist the user's latest current_score + grade.
-        Creates a minimal user shell on first write if the profile does not exist yet.
-        """
-        now = datetime.now(timezone.utc).isoformat()
-        self._col("users").update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "current_score": int(current_score),
-                    "grade": grade,
-                    "updated_at": now,
-                },
-                "$setOnInsert": {
-                    "created_at": now,
-                    "name": "Unknown",
-                },
-            },
-            upsert=True,
-        )
 
     def list_users(self) -> list[dict]:
         return list(self._col("users").find({}, {"_id": 0}))
@@ -442,20 +427,25 @@ class _MongoClient:
     # MEAL SCORE CACHE
     # ══════════════════════════════════════════════════════════════════════════
 
-    def get_meal_score(self, cache_key: str) -> Optional[int]:
-        """Return cached raw_score for cache_key, or None on miss."""
+    def get_meal_score(self, cache_key: str) -> Optional[tuple]:
+        """
+        Return (raw_score: int, note: str) for cache_key, or None on miss.
+        """
         doc = self._col("meal_score_cache").find_one(
             {"cache_key": cache_key}, {"_id": 0}
         )
-        return int(doc["raw_score"]) if doc and "raw_score" in doc else None
+        if doc:
+            return doc["raw_score"], doc["note"]
+        return None
 
-    def set_meal_score(self, cache_key: str, raw_score: int) -> None:
-        """Persist a meal raw_score result."""
+    def set_meal_score(self, cache_key: str, raw_score: int, note: str) -> None:
+        """Persist a meal score result."""
         self._col("meal_score_cache").update_one(
             {"cache_key": cache_key},
             {"$set": {
                 "cache_key": cache_key,
                 "raw_score": raw_score,
+                "note":      note,
                 "cached_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
@@ -464,30 +454,6 @@ class _MongoClient:
     # ══════════════════════════════════════════════════════════════════════════
     # GENTLE NOTE CACHE
     # ══════════════════════════════════════════════════════════════════════════
-
-    def get_score_behaviour(self, cache_key: str) -> Optional[int]:
-        """Return cached deterministic score-helper value for cache_key, or None."""
-        doc = self._col("score_behaviour_cache").find_one(
-            {"cache_key": cache_key}, {"_id": 0, "value": 1}
-        )
-        if not doc or "value" not in doc:
-            return None
-        try:
-            return int(doc["value"])
-        except (TypeError, ValueError):
-            return None
-
-    def set_score_behaviour(self, cache_key: str, value: int) -> None:
-        """Persist a deterministic score-helper value."""
-        self._col("score_behaviour_cache").update_one(
-            {"cache_key": cache_key},
-            {"$set": {
-                "cache_key": cache_key,
-                "value": int(value),
-                "cached_at": datetime.now(timezone.utc).isoformat(),
-            }},
-            upsert=True,
-        )
 
     def get_gentle_note(self, cache_key: str) -> Optional[str]:
         """Return cached gentle note string, or None on miss."""
@@ -539,6 +505,62 @@ class _MongoClient:
                 "user_given_name": user_given_name,
                 "usda_ids":        usda_ids,
                 "cached_at":       datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FOOD NAME → USDA CACHE
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_food_name_usda(self, name_key: str) -> Optional[dict]:
+        """
+        Return cached {usda_id, usda_description} for a normalized food name key,
+        or None on miss.
+        """
+        doc = self._col("food_name_usda_cache").find_one(
+            {"name_key": name_key},
+            {"_id": 0, "usda_id": 1, "usda_description": 1},
+        )
+        return doc if doc else None
+
+    def set_food_name_usda(
+        self,
+        name_key:         str,
+        usda_id:          int,
+        usda_description: str,
+    ) -> None:
+        """Persist food name → USDA ID mapping."""
+        self._col("food_name_usda_cache").update_one(
+            {"name_key": name_key},
+            {"$set": {
+                "name_key":         name_key,
+                "usda_id":          usda_id,
+                "usda_description": usda_description,
+                "cached_at":        datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FOOD NOTE CACHE  (/recommend/food_note)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_food_note(self, cache_key: str) -> Optional[str]:
+        """Return cached food note string, or None on miss."""
+        doc = self._col("food_note_cache").find_one(
+            {"cache_key": cache_key}, {"_id": 0, "note": 1}
+        )
+        return doc["note"] if doc else None
+
+    def set_food_note(self, cache_key: str, note: str) -> None:
+        """Persist a food note response."""
+        self._col("food_note_cache").update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
+                "note":      note,
+                "cached_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
         )

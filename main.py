@@ -1,7 +1,7 @@
-﻿"""
+"""
 main.py
-â”€â”€â”€â”€â”€â”€â”€
-Gut Health API â€” 14 endpoints.
+───────
+Gut Health API — 14 endpoints.
 
 Startup: < 2 seconds (was 60 s). No model downloads. No RAM for ML weights.
 AI:      Claude API (claude-sonnet-4-6) via ANTHROPIC key from .env
@@ -16,7 +16,6 @@ import os
 import sys
 import time
 import logging
-from math import sqrt
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -35,9 +34,9 @@ from scorer import DigestiveInput, DigestiveResult, calculate_score
 from text_context_parser import utc_now_iso
 from culprit_food_finder import find_culprit_foods, CulpritResult, CulpritFood
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Logging
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,9 +46,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # App state
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 class _State:
     claude_client                  = None   # anthropic.Anthropic
@@ -86,23 +85,23 @@ class _State:
 _state = _State()
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Lifespan â€” all startup logic
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# Lifespan — all startup logic
+# ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t0 = time.time()
 
     if _MOCK_MODE:
-        log.info("âš ï¸  MOCK_MODE=true â€” Claude/AI endpoints return fake data. USDA still uses real API.")
-        # USDA is free â€” always init it even in mock mode so real food data is available
+        log.info("⚠️  MOCK_MODE=true — Claude/AI endpoints return fake data. USDA still uses real API.")
+        # USDA is free — always init it even in mock mode so real food data is available
         usda_key = os.getenv("USDA_API_KEY")
         try:
             from usda_client import USDAClient
             _state.usda_client = USDAClient(api_key=usda_key, mongo_col=None)
             _state.usda_ready  = True
-            log.info("USDA client ready (mock mode â€” no MongoDB cache).")
+            log.info("USDA client ready (mock mode — no MongoDB cache).")
         except Exception as exc:
             log.warning(f"USDA client failed in mock mode: {exc}")
         yield
@@ -110,16 +109,16 @@ async def lifespan(app: FastAPI):
         return
 
 
-    # â”€â”€ 1. Claude client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 1. Claude client ──────────────────────────────────────────────────────
     claude_key = os.getenv("CLAUDE_API_key")
     if not claude_key:
-        log.error("CLAUDE_API_key is missing from .env â€” all AI features will fail.")
+        log.error("CLAUDE_API_key is missing from .env — all AI features will fail.")
     else:
         _state.claude_client = anthropic.Anthropic(api_key=claude_key)
         log.info("Claude client ready.")
 
 
-    # â”€â”€ 2. USDA client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 2. USDA client ────────────────────────────────────────────────────────
     usda_key = os.getenv("USDA_API_KEY")
     
     try:
@@ -133,7 +132,7 @@ async def lifespan(app: FastAPI):
             usda_search_col = _mongo_db_ref._col("usda_search_cache")
             log.info("MongoDB connected. USDA nutrient + search cache enabled.")
         except Exception as mongo_exc:
-            log.warning(f"MongoDB unavailable ({mongo_exc}) â€” USDA cache disabled, in-process cache only.")
+            log.warning(f"MongoDB unavailable ({mongo_exc}) — USDA cache disabled, in-process cache only.")
             usda_col        = None
             usda_search_col = None
 
@@ -148,7 +147,7 @@ async def lifespan(app: FastAPI):
         _state.usda_error = str(exc)
         log.error(f"USDA client failed: {exc}")
 
-    # â”€â”€ 3. Food text-to-USDA pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 3. Food text-to-USDA pipeline ────────────────────────────────────────
     try:
         import food_text_to_usda as _ft
         _ft.init(_state.claude_client, _state.usda_client,
@@ -159,7 +158,7 @@ async def lifespan(app: FastAPI):
         _state.usda_error = str(exc)
         log.error(f"food_text_to_usda failed: {exc}")
 
-    # â”€â”€ 4. Nutrition scorer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 4. Nutrition scorer ───────────────────────────────────────────────────
     try:
         import nutrition_scorer as _ns
         _ns.init(_state.claude_client, _state.usda_client,
@@ -172,7 +171,7 @@ async def lifespan(app: FastAPI):
         _state.nutrition_error = str(exc)
         log.error(f"nutrition_scorer failed: {exc}")
 
-    # â”€â”€ 5. Food-symptom predictor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 5. Food-symptom predictor ─────────────────────────────────────────────
     try:
         import food_symptom_predictor as _fsp
         _fsp.init(_state.claude_client, _state.usda_client)
@@ -183,7 +182,7 @@ async def lifespan(app: FastAPI):
         _state.predictor_error = str(exc)
         log.error(f"food_symptom_predictor failed: {exc}")
 
-    # â”€â”€ 6. MongoDB + Bayesian memory store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 6. MongoDB + Bayesian memory store ────────────────────────────────────
     if _state._mongo_db is not None:
         try:
             from database import MongoUserMemoryStore
@@ -192,7 +191,7 @@ async def lifespan(app: FastAPI):
             _state.auto_update_from_logs = auto_update_from_logs
             log.info("MongoUserMemoryStore ready.")
         except Exception as exc:
-            log.warning(f"MongoUserMemoryStore failed ({exc}) â€” falling back to in-memory.")
+            log.warning(f"MongoUserMemoryStore failed ({exc}) — falling back to in-memory.")
 
     if _state.memory_store is None:
         try:
@@ -203,7 +202,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             log.error(f"Memory store failed: {exc}")
 
-    # â”€â”€ 7. Food recommender â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 7. Food recommender ───────────────────────────────────────────────────
     try:
         import food_recommender as _fr
         _fr.init(_state.claude_client, _state.usda_client)
@@ -214,7 +213,7 @@ async def lifespan(app: FastAPI):
         _state.recommender_error = str(exc)
         log.error(f"food_recommender failed: {exc}")
 
-    # â”€â”€ 8. Meal symptom forecast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 8. Meal symptom forecast ──────────────────────────────────────────────
     try:
         import meal_symptom_forecast as _msf
         _msf.init(_state.usda_client)
@@ -225,16 +224,16 @@ async def lifespan(app: FastAPI):
         _state.meal_forecast_error = str(exc)
         log.error(f"meal_symptom_forecast failed: {exc}")
 
-    # â”€â”€ 9. Symptom note analyser (keyword-based, no model) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 9. Symptom note analyser (keyword-based, no model) ────────────────────
     try:
         import symptom_note_analyser as _sna
         _sna.init_classifier(None)   # no-op; keyword matching only
         _state.analyse_symptom_note = _sna.analyse_symptom_note
         log.info("symptom_note_analyser ready.")
     except Exception as exc:
-        log.warning(f"symptom_note_analyser failed ({exc}) â€” notes stored but not scored.")
+        log.warning(f"symptom_note_analyser failed ({exc}) — notes stored but not scored.")
 
-    # â”€â”€ 10. Food tag classifier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 10. Food tag classifier ───────────────────────────────────────────────
     try:
         import food_tag_classifier as _ftc
         _ftc.init(_state.claude_client, _state.usda_client)
@@ -242,7 +241,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning(f"food_tag_classifier failed: {exc}")
 
-    # â”€â”€ 11. Diet symptom risk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── 11. Diet symptom risk ─────────────────────────────────────────────────
     try:
         import diet_symptom_risk as _dsr
         _dsr.init(_state.claude_client)
@@ -250,18 +249,18 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning(f"diet_symptom_risk failed: {exc}")
 
-    log.info(f"âœ… All modules ready in {time.time()-t0:.1f}s")
+    log.info(f"✅ All modules ready in {time.time()-t0:.1f}s")
     yield
     log.info("Shutdown.")
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # FastAPI app
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 # On Railway, RAILWAY_PUBLIC_DOMAIN is set automatically (e.g. "your-app.up.railway.app").
 # FastAPI needs to know this so the Swagger UI sends requests to the correct
-# HTTPS URL instead of the internal http://0.0.0.0:PORT â€” which browsers block
+# HTTPS URL instead of the internal http://0.0.0.0:PORT — which browsers block
 # as mixed content, causing the "Failed to fetch" error in Swagger.
 _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 _servers = (
@@ -284,9 +283,9 @@ app.add_middleware(
 )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# MOCK MODE â€” one fake-data function per endpoint (activated by MOCK_MODE=true)
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# MOCK MODE — one fake-data function per endpoint (activated by MOCK_MODE=true)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _mk_mock_score():
     from scorer import ScoreBreakdown, Concern, Recommendation, DigestiveResult
@@ -299,15 +298,14 @@ def _mk_mock_score():
         concerns=[Concern(category="lifestyle",
                            description="[MOCK] Sample gut-health concern for demo purposes.")],
         recommendations=[Recommendation(priority=1,
-                                         advice="[MOCK] Stay hydrated: 2â€“2.5 L water per day.")],
+                                         advice="[MOCK] Stay hydrated: 2–2.5 L water per day.")],
     )
 
 
 def _mk_mock_log_food(req):
     from main import FoodLogResponse, FoodLogItem  # forward-ref; use local names below
-    base_score = req.current_score if req.current_score is not None else 70
     return {
-        "updated_score":    max(40, min(99, base_score + 3)),
+        "updated_score":    max(40, min(99, req.current_score + 3)),
         "food_detected":    2,
         "logged_at":        utc_now_iso(),
         "normalised_names": ["Chicken", "Rice"],
@@ -316,16 +314,17 @@ def _mk_mock_log_food(req):
             {"normalised_name": "Rice",    "usda_id": 169704, "weight_g": 200.0},
         ],
         "meal_type": req.meal_type,
+        "note": "[MOCK] Balanced meal with moderate gut impact.",
     }
 
 
 def _mk_mock_log_symptom(req):
     deduped = list(dict.fromkeys(req.symptoms))
-    base_score = req.current_score if req.current_score is not None else 70
     return {
-        "updated_score":     max(0, min(100, base_score - 8)),
+        "updated_score":     max(0, min(100, req.current_score - 8)),
         "detected_symptoms": deduped,
         "logged_at":         utc_now_iso(),
+        "note":              "[MOCK] Symptoms logged; moderate penalty applied.",
     }
 
 
@@ -342,6 +341,7 @@ def _mk_mock_food_parse(req):
         "score_impact": 3  if req.current_score is not None else None,
         "updated_score": max(40, min(99, (req.current_score or 70) + 3))
                          if req.current_score is not None else None,
+        "note": "[MOCK] Sample food parse result.",
     }
 
 
@@ -366,7 +366,7 @@ def _mk_mock_food_lookup(req):
         "total_protein":         round(sum(i["protein"]      or 0 for i in items), 4),
         "total_fat":             round(sum(i["fat"]          or 0 for i in items), 4),
         "total_normalised_name": " + ".join(f"MOCK Food #{i['usda_id']}" for i in items)
-                                  + f" â€” {total_w} g",
+                                  + f" — {total_w} g",
         "total_weight_g":        total_w,
     }
 
@@ -408,7 +408,7 @@ def _mk_mock_safe_food(req):
         "foods_analysed":           len(req.food_logs),
         "composite_meals_detected": 0,
         "symptoms_considered":      len(req.symptom_logs),
-        "source_note": "[MOCK] Fake recommendations â€” enable real mode by removing MOCK_MODE=true.",
+        "source_note": "[MOCK] Fake recommendations — enable real mode by removing MOCK_MODE=true.",
     }
 
 
@@ -487,17 +487,17 @@ def _mk_mock_learning_summary(user_id):
     return {
         "user_id": user_id, "total_food_logs": 42, "total_symptom_logs": 12,
         "total_log_entries": 54, "personalisation_weight": 0.45, "model_weight": 0.55,
-        "personalisation_stage": "[MOCK] Learning â€” personal patterns emerging",
+        "personalisation_stage": "[MOCK] Learning — personal patterns emerging",
         "learned_pairs": 3,
         "top_sensitivities": [
             {
-                "food_symptom_pair": "Dairy â†’ Bloating",
+                "food_symptom_pair": "Dairy → Bloating",
                 "causation_probability": 0.78, "observations": 8,
                 "confirmations": 6, "confidence": 0.70,
                 "last_updated": utc_now_iso(),
             },
         ],
-        "learning_message": "[MOCK] 3 foodâ†’symptom patterns identified.",
+        "learning_message": "[MOCK] 3 food→symptom patterns identified.",
     }
 
 
@@ -512,9 +512,9 @@ def _mk_mock_dashboard(user_id):
             {"date": "2026-04-10", "score": 72, "event": "food"},
         ],
         "personalisation_weight": 0.45,
-        "personalisation_stage": "[MOCK] Learning â€” personal patterns emerging",
+        "personalisation_stage": "[MOCK] Learning — personal patterns emerging",
         "top_sensitivities": [
-            {"pair": "Dairy â†’ Bloating", "probability": 0.78, "observations": 8},
+            {"pair": "Dairy → Bloating", "probability": 0.78, "observations": 8},
         ],
     }
 
@@ -522,7 +522,7 @@ def _mk_mock_dashboard(user_id):
 def _mk_mock_db_health():
     return {
         "status":   "mock",
-        "note":     "MOCK_MODE=true â€” no real database connection. Remove MOCK_MODE to connect.",
+        "note":     "MOCK_MODE=true — no real database connection. Remove MOCK_MODE to connect.",
         "database": "gut_health_mock",
         "collections": {
             "users": 3, "food_logs": 84, "symptom_logs": 36,
@@ -544,9 +544,9 @@ def _mk_mock_barcode(req):
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _grade(score: int) -> str:
     if   score >= 85: return "Excellent"
@@ -563,9 +563,9 @@ def _grade_summary(score: int) -> str:
     else:             return "Please consult a healthcare professional."
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 1 â€” POST /score
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 1 — POST /score
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/score", response_model=DigestiveResult,
           summary="Calculate onboarding digestion score (call once at onboarding)")
@@ -574,424 +574,45 @@ def score(data: DigestiveInput) -> DigestiveResult:
         return _mk_mock_score()
     return calculate_score(data)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 3 â€” POST /log/food
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 3 — POST /log/food
+# ─────────────────────────────────────────────────────────────────────────────
 
 _VALID_MEAL_TYPES = {"Breakfast", "Lunch", "Dinner", "Snack"}
-_SCORE_FLOOR      = 0
-_SCORE_CEIL       = 100
-_HEALTHY_BAND_LOW = 70
-_HEALTHY_BAND_HIGH = 90
-_HEALTHY_TARGET_SCORE = 82
+_SCORE_FLOOR      = 40
+_SCORE_CEIL       = 99
 
 
-def _clamp_score(score: float) -> int:
-    return max(_SCORE_FLOOR, min(_SCORE_CEIL, int(round(score))))
+def _calculate_score_impact(raw_score: int, current_score: int) -> int:
+    """
+    Apply a neutralising multiplier so the gut score drifts toward the
+    healthy band (80-90) rather than runaway highs or lows.
 
+    Positive foods have MORE impact when the score is LOW (the user
+    benefits more from good food when they are struggling).
+    Negative foods have MORE impact when the score is HIGH (a healthy
+    gut has more to lose from junk food).
 
-def _positive_score_multiplier(current_score: int) -> float:
-    clamped = _clamp_score(current_score)
-    if clamped <= 30:
-        return 1.0
-    if clamped <= 40:
-        return 0.8
-    if clamped <= 50:
-        return 0.6
-    if clamped <= 60:
-        return 0.5
-    if clamped <= 70:
-        return 0.4
-    if clamped <= 80:
-        return 0.2
-    return 0.1
-
-
-def _negative_score_multiplier(current_score: int) -> float:
-    clamped = _clamp_score(current_score)
-    if clamped >= 90:
-        return 1.0
-    if clamped >= 80:
-        return 0.8
-    if clamped >= 70:
-        return 0.6
-    if clamped >= 60:
-        return 0.5
-    if clamped >= 50:
-        return 0.4
-    if clamped >= 40:
-        return 0.2
-    return 0.1
-
-
-def _neutral_score_drift(current_score: int) -> int:
-    return 1 if _clamp_score(current_score) <= _HEALTHY_TARGET_SCORE else -1
-
-
-def _safe_float(value: object) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _scaled_nutrient(food_data: dict, key: str, weight_g: float) -> float:
-    if weight_g <= 0:
-        return 0.0
-    return _safe_float(food_data.get(key)) * (weight_g / 100.0)
-
-
-def _score_behaviour_cache_key(kind: str, *parts: str) -> str:
-    payload = "|".join([kind, *parts])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _get_score_behaviour_cache(cache_key: str) -> Optional[int]:
-    mongo_db = getattr(_state, "_mongo_db", None)
-    if mongo_db is None or not hasattr(mongo_db, "get_score_behaviour"):
-        return None
-    try:
-        return mongo_db.get_score_behaviour(cache_key)
-    except Exception as exc:
-        log.warning(f"score behaviour cache read failed: {exc}")
-        return None
-
-
-def _set_score_behaviour_cache(cache_key: str, value: int) -> None:
-    mongo_db = getattr(_state, "_mongo_db", None)
-    if mongo_db is None or not hasattr(mongo_db, "set_score_behaviour"):
-        return
-    try:
-        mongo_db.set_score_behaviour(cache_key, value)
-    except Exception as exc:
-        log.warning(f"score behaviour cache write failed: {exc}")
-
-
-def _food_balance_from_name(name: str, weight_g: float) -> float:
-    text = (name or "").lower()
-    positive = 0.0
-    negative = 0.0
-
-    if any(word in text for word in ("fruit", "vegetable", "salad", "bean", "lentil", "oat", "yogurt", "fish", "chicken", "egg")):
-        positive += 1.5
-    if any(word in text for word in ("banana", "apple", "broccoli", "spinach", "carrot", "sweet potato", "brown rice")):
-        positive += 1.0
-
-    if any(word in text for word in ("fried", "burger", "pizza", "chips", "cookie", "cake", "pastry", "candy", "soda", "cola", "oil", "butter", "cream")):
-        negative += 2.0
-    if weight_g >= 250 and any(word in text for word in ("fried", "pizza", "burger", "cake", "soda", "oil")):
-        negative += 1.0
-
-    return positive - negative
-
-
-def _food_balance_from_usda(item: dict) -> float:
-    weight_g = max(0.0, _safe_float(item.get("weight_g")))
-    fallback_name = str(item.get("usda_description") or item.get("normalised_name") or "")
-    if weight_g <= 0:
-        return 0.0
-
-    usda_client = getattr(_state, "usda_client", None)
-    usda_id = int(_safe_float(item.get("usda_id")))
-    if usda_client is None or usda_id <= 0:
-        return _food_balance_from_name(fallback_name, weight_g)
-
-    food_data = usda_client.get_nutrients(usda_id)
-    if not food_data:
-        return _food_balance_from_name(fallback_name, weight_g)
-
-    desc_blob = f"{food_data.get('description', '')} {food_data.get('food_category', '')}".lower()
-    protein = _scaled_nutrient(food_data, "protein", weight_g)
-    fiber = _scaled_nutrient(food_data, "fiber", weight_g)
-    potassium = _scaled_nutrient(food_data, "potassium", weight_g)
-    vitamin_c = _scaled_nutrient(food_data, "vitamin_c", weight_g)
-    calcium = _scaled_nutrient(food_data, "calcium", weight_g)
-    iron = _scaled_nutrient(food_data, "iron", weight_g)
-    sodium = _scaled_nutrient(food_data, "sodium", weight_g)
-    sat_fat = _scaled_nutrient(food_data, "sat_fat", weight_g)
-    sugar = _scaled_nutrient(food_data, "sugar", weight_g)
-    carbs = _scaled_nutrient(food_data, "carbs", weight_g)
-    total_fat = _scaled_nutrient(food_data, "total_fat", weight_g)
-    calories = _scaled_nutrient(food_data, "calories", weight_g)
-
-    score = 0.0
-
-    if protein >= 18:
-        score += 3.0
-    elif protein >= 8:
-        score += 1.5
-
-    if fiber >= 7:
-        score += 3.0
-    elif fiber >= 3:
-        score += 1.5
-
-    if potassium >= 350:
-        score += 1.0
-    elif potassium >= 200:
-        score += 0.5
-
-    if vitamin_c >= 15:
-        score += 1.0
-    if calcium >= 120:
-        score += 0.5
-    if 1.5 <= iron <= 12:
-        score += 0.5
-
-    if any(word in desc_blob for word in ("fruit", "vegetable", "bean", "lentil", "pea", "broccoli", "spinach", "carrot", "banana", "apple", "oat", "brown rice", "sweet potato")):
-        score += 0.75
-    if protein >= 20 and sat_fat <= 3 and sodium < 300:
-        score += 0.75
-
-    if sodium >= 700:
-        score -= 3.0
-    elif sodium >= 350:
-        score -= 1.5
-
-    if sat_fat >= 8:
-        score -= 3.0
-    elif sat_fat >= 4:
-        score -= 1.5
-
-    if sugar >= 18 and fiber < 3 and protein < 5:
-        score -= 3.0
-    elif sugar >= 10 and fiber < 2 and protein < 3:
-        score -= 1.5
-
-    if carbs >= 60 and fiber < 4 and protein < 8:
-        score -= 3.0
-    elif carbs >= 40 and fiber < 3 and protein < 6:
-        score -= 1.5
-
-    if total_fat >= 20 and fiber < 5 and protein < 12:
-        score -= 2.0
-    elif total_fat >= 12 and fiber < 4 and protein < 8:
-        score -= 1.0
-
-    if calories >= 450 and fiber < 4 and protein < 15:
-        score -= 2.0
-
-    if "fried" in desc_blob:
-        score -= 1.5
-    if any(word in desc_blob for word in ("soft drink", "soda", "cola", "candy", "cookie", "cake", "pastry", "chips")):
-        score -= 2.5
-    if "oil" in desc_blob and weight_g >= 10:
-        score -= 2.0
-
-    return score
-
-
-def _calculate_score_impact(base_modifier: int, current_score: int) -> int:
-    if base_modifier == 0:
-        return _neutral_score_drift(current_score)
-
-    multiplier = (
-        _positive_score_multiplier(current_score)
-        if base_modifier > 0
-        else _negative_score_multiplier(current_score)
-    )
-    impact = max(1, int(round(abs(base_modifier) * multiplier)))
-    return impact if base_modifier > 0 else -impact
-
-
-def _meal_score_modifier(raw_items: list[dict], meal_type: str) -> int:
-    if not raw_items:
-        return 0
-
-    cache_parts = [meal_type.lower()]
-    for item in sorted(
-        raw_items,
-        key=lambda entry: (
-            int(_safe_float(entry.get("usda_id"))),
-            str(entry.get("usda_description") or entry.get("normalised_name") or "").lower(),
-        ),
-    ):
-        rounded_weight = int(round(_safe_float(item.get("weight_g")) / 10.0) * 10)
-        cache_parts.append(
-            f"{int(_safe_float(item.get('usda_id')))}:{rounded_weight}:{str(item.get('usda_description') or item.get('normalised_name') or '').lower()}"
-        )
-
-    cache_key = _score_behaviour_cache_key("meal-score-v2", *cache_parts)
-    cached = _get_score_behaviour_cache(cache_key)
-    if cached is not None:
-        return max(-10, min(10, int(cached)))
-
-    meal_balance = sum(_food_balance_from_usda(item) for item in raw_items)
-    if meal_type == "Dinner":
-        meal_balance *= 1.15 if meal_balance < 0 else 0.95
-    elif meal_type == "Snack":
-        meal_balance *= 0.85
-    elif meal_type == "Breakfast" and meal_balance < 0:
-        meal_balance *= 1.05
-
-    if abs(meal_balance) < 0.35:
-        modifier = 0
+    Formula (derived from user example: +3 at score=60 → +5, +3 at score=90 → +1):
+        positive multiplier = (100 - current_score) / 24
+        negative multiplier = (current_score - 40)  / 24
+    """
+    clamped = max(_SCORE_FLOOR, min(_SCORE_CEIL, current_score))
+    if raw_score >= 0:
+        multiplier = (100 - clamped) / 24
     else:
-        strength = max(1, min(10, int(round(abs(meal_balance) * 1.8))))
-        modifier = strength if meal_balance > 0 else -strength
-
-    _set_score_behaviour_cache(cache_key, modifier)
-    return modifier
-
-
-def _symptom_time_bucket(logged_at: datetime) -> str:
-    hour = logged_at.hour
-    if 22 <= hour or hour < 6:
-        return "night"
-    if 6 <= hour < 10:
-        return "morning"
-    if 18 <= hour < 22:
-        return "evening"
-    return "day"
-
-
-def _symptom_score_penalty(symptoms: List[str], severity: str, logged_at: datetime) -> int:
-    analyse_symptom = getattr(_state, "analyse_symptom_log", None)
-    if not callable(analyse_symptom):
-        raise RuntimeError("Symptom scoring engine unavailable.")
-
-    deduped_symptoms = sorted({symptom.strip() for symptom in symptoms if symptom.strip()})
-    cache_key = _score_behaviour_cache_key(
-        "symptom-score-v2",
-        severity.lower(),
-        _symptom_time_bucket(logged_at),
-        *[symptom.lower() for symptom in deduped_symptoms],
-    )
-    cached = _get_score_behaviour_cache(cache_key)
-    if cached is not None:
-        return max(0, min(40, int(cached)))
-
-    penalties = [
-        max(0, -analyse_symptom(symptom, severity, logged_at).score_penalty)
-        for symptom in deduped_symptoms
-    ]
-    if not penalties:
-        return 0
-
-    mean_penalty = sum(penalties) / len(penalties)
-    combined_penalty = mean_penalty * sqrt(len(penalties))
-    raw_penalty = max(0, min(40, int(round(combined_penalty))))
-    _set_score_behaviour_cache(cache_key, raw_penalty)
-    return raw_penalty
-
-
-def _calculate_symptom_penalty(raw_penalty: int, current_score: int) -> int:
-    if raw_penalty <= 0:
-        return 1
-
-    base_strength = max(1, min(10, int(round(raw_penalty / 4.0))))
-    penalty = int(round(base_strength * _negative_score_multiplier(current_score)))
-    return max(1, min(10, penalty))
-
-
-def _persist_score_update(
-    user_id: Optional[str],
-    previous_score: Optional[int],
-    updated_score: Optional[int],
-    event_type: str,
-    modifier: int,
-    details: dict,
-) -> None:
-    if not user_id or previous_score is None or updated_score is None:
-        return
-
-    mongo_db = getattr(_state, "_mongo_db", None)
-    if mongo_db is None:
-        return
-
-    try:
-        mongo_db.set_user_score(user_id, updated_score, _grade(updated_score))
-        mongo_db.insert_score_event(
-            user_id,
-            {
-                "event_type": event_type,
-                "previous_score": previous_score,
-                "new_score": updated_score,
-                "modifier": modifier,
-                "details": details,
-            },
-        )
-    except Exception as exc:
-        log.warning(f"score persistence failed for user={user_id!r}: {exc}")
-
-
-def _persist_food_logs(
-    user_id: Optional[str],
-    raw_items: list[dict],
-    meal_type: str,
-    source_text: str,
-    logged_at: str,
-    score_modifier: int,
-) -> None:
-    if not user_id or not raw_items:
-        return
-
-    mongo_db = getattr(_state, "_mongo_db", None)
-    if mongo_db is None:
-        return
-
-    entries = [
-        {
-            "user_id": user_id,
-            "usda_id": item["usda_id"],
-            "usda_description": item["usda_description"],
-            "normalised_name": item["normalised_name"].split(",")[0].strip(),
-            "quantity_g": item["weight_g"],
-            "unit": "g",
-            "meal_type": meal_type,
-            "raw_food": item.get("raw_food"),
-            "source_text": source_text,
-            "score_modifier": score_modifier,
-            "logged_at": logged_at,
-        }
-        for item in raw_items
-    ]
-
-    try:
-        mongo_db.insert_food_logs_bulk(entries)
-    except Exception as exc:
-        log.warning(f"food log persistence failed for user={user_id!r}: {exc}")
-
-
-def _persist_symptom_logs(
-    user_id: Optional[str],
-    symptoms: List[str],
-    severity: str,
-    logged_at: str,
-    score_penalty: int,
-) -> None:
-    if not user_id or not symptoms:
-        return
-
-    mongo_db = getattr(_state, "_mongo_db", None)
-    if mongo_db is None:
-        return
-
-    entries = [
-        {
-            "user_id": user_id,
-            "symptom": symptom,
-            "severity": severity,
-            "score_penalty": score_penalty,
-            "logged_at": logged_at,
-        }
-        for symptom in symptoms
-    ]
-
-    try:
-        mongo_db.insert_symptom_logs_bulk(entries)
-    except Exception as exc:
-        log.warning(f"symptom log persistence failed for user={user_id!r}: {exc}")
+        multiplier = (clamped - _SCORE_FLOOR) / 24
+    return int(round(raw_score * max(0.05, multiplier)))
 
 
 
 
 class FoodLogRequest(BaseModel):
     current_score: int = Field(..., ge=0, le=100,
-                               description="User's current gut health score (0-100).")
+                               description="User's current gut health score")
     meal_type:     str = Field(..., description="Breakfast | Lunch | Dinner | Snack")
     foods:         str = Field(..., min_length=2, max_length=500,
-                               description="Any meal text â€” single or composite food",
+                               description="Any meal text — single or composite food",
                                examples=["chicken biriyani", "rice and egg fry"])
     quantity:      str = Field(..., min_length=1, max_length=100,
                                description="Amount the user ate",
@@ -1011,6 +632,8 @@ class FoodLogResponse(BaseModel):
     normalised_names:     List[str]
     results:              List[FoodLogItem]
     meal_type:            str
+    note:                 str
+    users_given_food_name: Optional[str] = None
 
 
 @app.post(
@@ -1021,7 +644,7 @@ class FoodLogResponse(BaseModel):
         "Send a meal description and quantity in plain text. Claude parses and decomposes "
         "the food, looks up USDA IDs, evaluates gut health impact (meal timing, nutritional "
         "quality, gut irritants), applies a score multiplier that neutralises around 80-90, "
-        "and returns the updated score."
+        "and returns the updated score with a 10-12 word note."
     ),
 )
 def log_food(req: FoodLogRequest) -> FoodLogResponse:
@@ -1034,7 +657,7 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
     if not _state.usda_ready:
         raise HTTPException(503, f"USDA pipeline unavailable: {_state.usda_error or 'unknown'}")
 
-    # â”€â”€ Step 1: parse food text via existing text_to_usda â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 1: parse food text via existing text_to_usda ────────────────────
     # Combine quantity + food so Claude can distribute weights intelligently
     combined_text = f"{req.quantity} {req.foods} for {req.meal_type.lower()}"
     try:
@@ -1057,20 +680,54 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
     logged_at        = raw[0].get("logged_at", utc_now_iso())
     normalised_names = [r["normalised_name"].split(",")[0].strip() for r in raw]
 
-    # â”€â”€ Step 2: score the meal via the shared nutrition engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    current_score = req.current_score
-    base_modifier = _meal_score_modifier(raw, req.meal_type)
+    # ── Step 2: score the meal via Claude ────────────────────────────────────
+    raw_score = 0
+    note      = "Meal logged successfully."
+    if _state.nutrition_ready:
+        try:
+            import nutrition_scorer as _ns
+            foods_for_scoring = [
+                {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
+                for r in raw
+            ]
+            raw_score, note = _ns.score_meal_claude(
+                foods=foods_for_scoring,
+                meal_type=req.meal_type,
+            )
+        except Exception as exc:
+            log.warning(f"log/food scoring failed: {exc}")
 
-    # â”€â”€ Step 3: apply neutralising multiplier + clamp â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    score_impact  = _calculate_score_impact(base_modifier, current_score)
-    updated_score = _clamp_score(current_score + score_impact)
+    # ── Step 3: apply neutralising multiplier + clamp ────────────────────────
+    score_impact  = _calculate_score_impact(raw_score, req.current_score)
+    updated_score = max(_SCORE_FLOOR, min(_SCORE_CEIL, req.current_score + score_impact))
+
+    # ── Step 4: composite food detection + cache ──────────────────────────────
+    # All items from one parse call share the same logged_at — if there are 2+
+    # items they came from decomposing one composite dish (e.g. "chicken biryani").
+    # Store the user's original food name so future responses can surface it.
+    users_given_food_name: Optional[str] = None
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is not None:
+        cache_key = hashlib.sha256(
+            " ".join(combined_text.lower().split()).encode()
+        ).hexdigest()
+        try:
+            if len(raw) >= 2:
+                mongo_db.set_composite_food_name(
+                    cache_key       = cache_key,
+                    user_given_name = req.foods.strip(),
+                    usda_ids        = [r["usda_id"] for r in raw],
+                )
+            users_given_food_name = mongo_db.get_composite_food_name(cache_key)
+        except Exception as exc:
+            log.warning(f"composite_food_cache error: {exc}")
 
     return FoodLogResponse(
-        updated_score    = updated_score,
-        food_detected    = len(raw),
-        logged_at        = logged_at,
-        normalised_names = normalised_names,
-        results          = [
+        updated_score         = updated_score,
+        food_detected         = len(raw),
+        logged_at             = logged_at,
+        normalised_names      = normalised_names,
+        results               = [
             FoodLogItem(
                 normalised_name = r["normalised_name"].split(",")[0].strip(),
                 usda_id         = r["usda_id"],
@@ -1078,10 +735,12 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
             )
             for r in raw
         ],
-        meal_type        = req.meal_type,
+        meal_type             = req.meal_type,
+        note                  = note,
+        users_given_food_name = users_given_food_name,
     )
-# ENDPOINT 4 â€” POST /log/symptom
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ENDPOINT 4 — POST /log/symptom
+# ─────────────────────────────────────────────────────────────────────────────
 
 _VALID_SYMPTOMS   = {"Bloating","Abdominal Pain","Nausea","Constipation","Heartburn",
                      "Gas","Fatigue","Acid Reflux","Cramps","Diarrhea"}
@@ -1089,36 +748,56 @@ _VALID_SEVERITIES = {"Mild","Moderate","Severe"}
 
 
 class SymptomLogRequest(BaseModel):
-    current_score: int = Field(..., ge=0, le=100,
-                               description="User's current digestion score (0-100).")
+    current_score: int         = Field(..., ge=0, le=100,
+                                       description="User's current digestion score (0–100).")
     symptoms:      List[str]   = Field(..., min_length=1, max_length=12,
                                        description="One or more symptoms. Max 12.",
                                        examples=[["Bloating", "Heartburn"]])
     severity:      str         = Field(..., description="Mild | Moderate | Severe",
                                        examples=["Moderate"])
+    note:          Optional[str] = Field(default=None, max_length=1000,
+                                         description="Optional free-text description.")
     logged_at:     Optional[datetime] = Field(default=None,
                                               description="When the symptom occurred. Defaults to now.")
 
 
 class SymptomLogResponse(BaseModel):
-    updated_score:      int        = Field(..., description="Score after penalty applied (0-100).")
+    updated_score:      int        = Field(..., description="Score after penalty applied (0–100).")
     detected_symptoms:  List[str]  = Field(..., description="Validated, deduplicated symptom list.")
     logged_at:          str        = Field(..., description="UTC ISO-8601 timestamp used for this entry.")
+    note:               str        = Field(..., description="7–10 word clinical summary of what was reported.")
 
 
 @app.post("/log/symptom", response_model=SymptomLogResponse,
           summary="Log symptoms and get an updated digestion score")
 def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
     """
-    Log one or more gut symptoms and receive an updated digestion score.
+    Log one or more gut symptoms and receive an **updated digestion score**.
 
-    The shared nutrition scoring engine evaluates each symptom with the given
-    severity and timestamp, then combines them into one batch penalty in [0, 40]
-    that is subtracted from the current score.
+    Claude scores the full symptom picture in one call — taking into account
+    symptom count, severity, and the optional free-text note together — and
+    returns a penalty in [0, 40] that is subtracted from the current score.
+
+    **Penalty scale (approximate):**
+
+    | Situation | Penalty |
+    |---|---|
+    | 1 symptom, Mild, no note | 3–5 |
+    | 1 symptom, Moderate, no note | 6–9 |
+    | 1 symptom, Severe, no note | 10–13 |
+    | 2–3 symptoms, Moderate | 10–16 |
+    | 4–6 symptoms, Moderate | 17–24 |
+    | 7–9 symptoms, Severe | 25–32 |
+    | 10–12 symptoms, Severe + severe note | 33–40 |
+
+    **Allowed `symptoms`:** `Bloating` · `Abdominal Pain` · `Nausea` · `Constipation`
+    · `Heartburn` · `Gas` · `Fatigue` · `Acid Reflux` · `Cramps` · `Diarrhea`
+
+    **Allowed `severity`:** `Mild` · `Moderate` · `Severe`
     """
     if _MOCK_MODE:
         return SymptomLogResponse(**_mk_mock_log_symptom(req))
-
+    # ── Validate ──────────────────────────────────────────────────────────────
     invalid = [s for s in req.symptoms if s not in _VALID_SYMPTOMS]
     if invalid:
         raise HTTPException(
@@ -1131,12 +810,11 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
             detail=f"Invalid severity '{req.severity}'. Allowed: {sorted(_VALID_SEVERITIES)}",
         )
 
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for symptom in req.symptoms:
-        if symptom not in seen:
-            seen.add(symptom)
-            deduped.append(symptom)
+    # Deduplicate while preserving order
+    seen: set[str] = set(); deduped: list[str] = []
+    for s in req.symptoms:
+        if s not in seen:
+            seen.add(s); deduped.append(s)
 
     logged_at = req.logged_at or datetime.now(timezone.utc)
     logged_at_str = (
@@ -1144,37 +822,38 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
         if hasattr(logged_at, "strftime") else str(logged_at)
     )
 
-    if not callable(getattr(_state, "analyse_symptom_log", None)):
-        raise HTTPException(503, f"Nutrition scoring unavailable: {_state.nutrition_error or 'unknown'}")
-
-    current_score = req.current_score
+    # ── Score with Claude ─────────────────────────────────────────────────────
+    if _state.claude_client is None:
+        raise HTTPException(503, "Claude client not available.")
 
     try:
-        raw_penalty = _symptom_score_penalty(
-            symptoms=deduped,
-            severity=req.severity,
-            logged_at=logged_at,
+        from nutrition_scorer import score_symptom_log_claude
+        penalty, note_text = score_symptom_log_claude(
+            symptoms  = deduped,
+            severity  = req.severity,
+            note      = req.note,
         )
     except Exception as exc:
-        log.exception("symptom scoring failed")
+        log.exception("score_symptom_log_claude failed")
         raise HTTPException(500, f"Scoring error: {exc}")
 
-    penalty = _calculate_symptom_penalty(raw_penalty, current_score)
-    updated_score = _clamp_score(current_score - penalty)
+    updated_score = max(0, min(100, req.current_score - penalty))
 
     return SymptomLogResponse(
-        updated_score=updated_score,
-        detected_symptoms=deduped,
-        logged_at=logged_at_str,
+        updated_score     = updated_score,
+        detected_symptoms = deduped,
+        logged_at         = logged_at_str,
+        note              = note_text,
     )
-# ENDPOINT 1 â€” POST /food/parse
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 1 — POST /food/parse
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FoodParseRequest(BaseModel):
     text:          str = Field(..., min_length=3, max_length=1000,
                                examples=["I had eat 200g rice and egg fry in lunch"])
     current_score: Optional[int] = Field(None, ge=0, le=100,
-                               description="Pass your current score to score this parse like a food log and get updated_score.")
+                               description="Pass your current score to also get score_impact and updated_score")
 
 
 class FoodParseItem(BaseModel):
@@ -1191,15 +870,17 @@ class FoodParseResponse(BaseModel):
     meal_type:             Optional[str] = None
     score_impact:          Optional[int] = None
     updated_score:         Optional[int] = None
+    note:                  Optional[str] = None
+    users_given_food_name: Optional[str] = None
 
 
 @app.post(
     "/food/parse",
     response_model=FoodParseResponse,
-    summary="Parse natural meal text -> USDA IDs + optional gut health score",
+    summary="Parse natural meal text → USDA IDs + optional gut health score",
     description=(
         "Parse any meal description. Pass current_score to also receive "
-        "score_impact and updated_score."
+        "score_impact, updated_score, and a gut health note."
     ),
 )
 def food_parse(req: FoodParseRequest) -> FoodParseResponse:
@@ -1223,21 +904,50 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
     meal_type        = raw[0].get("meal_type")
     normalised_names = [r["normalised_name"].split(",")[0].strip() for r in raw]
 
-    current_score = req.current_score
     score_impact:  Optional[int] = None
     updated_score: Optional[int] = None
-    meal_type_for_log = meal_type or "Lunch"
+    note:          Optional[str] = None
 
-    if current_score is not None:
-        base_modifier = _meal_score_modifier(raw, meal_type_for_log)
-        score_impact  = _calculate_score_impact(base_modifier, current_score)
-        updated_score = _clamp_score(current_score + score_impact)
+    if req.current_score is not None and _state.nutrition_ready:
+        try:
+            import nutrition_scorer as _ns
+            foods_for_scoring = [
+                {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
+                for r in raw
+            ]
+            raw_score, note = _ns.score_meal_claude(
+                foods=foods_for_scoring,
+                meal_type=meal_type or "Lunch",
+            )
+            score_impact  = _calculate_score_impact(raw_score, req.current_score)
+            updated_score = max(_SCORE_FLOOR, min(_SCORE_CEIL, req.current_score + score_impact))
+        except Exception as exc:
+            log.warning(f"food/parse scoring failed: {exc}")
+
+    # ── Composite food detection + cache ─────────────────────────────────────
+    # 2+ items from one parse call → composite dish. Store user's original text.
+    users_given_food_name: Optional[str] = None
+    mongo_db = getattr(_state, "_mongo_db", None)
+    if mongo_db is not None:
+        parse_key = hashlib.sha256(
+            " ".join(req.text.lower().split()).encode()
+        ).hexdigest()
+        try:
+            if len(raw) >= 2:
+                mongo_db.set_composite_food_name(
+                    cache_key       = parse_key,
+                    user_given_name = req.text.strip(),
+                    usda_ids        = [r["usda_id"] for r in raw],
+                )
+            users_given_food_name = mongo_db.get_composite_food_name(parse_key)
+        except Exception as exc:
+            log.warning(f"food/parse composite_food_cache error: {exc}")
 
     return FoodParseResponse(
-        Food_detected    = len(raw),
-        Logged_at        = logged_at,
-        normalised_names = normalised_names,
-        results          = [
+        Food_detected         = len(raw),
+        Logged_at             = logged_at,
+        normalised_names      = normalised_names,
+        results               = [
             FoodParseItem(
                 normalised_name = r["normalised_name"].split(",")[0].strip(),
                 usda_id         = r["usda_id"],
@@ -1245,12 +955,17 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
             )
             for r in raw
         ],
-        meal_type        = meal_type,
-        score_impact     = score_impact,
-        updated_score    = updated_score,
+        meal_type             = meal_type,
+        score_impact          = score_impact,
+        updated_score         = updated_score,
+        note                  = note,
+        users_given_food_name = users_given_food_name,
     )
-# ENDPOINT 6 â€” GET /food/lookup/{usda_id}
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 6 — GET /food/lookup/{usda_id}
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _sf(v) -> Optional[float]:
     """Safe-float: coerce to float or return None."""
@@ -1330,7 +1045,7 @@ def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
         )
 
     total_weight_g = round(sum(i.weight_g for i in foods_macros), 1)
-    total_normalised_name = ", ".join(n.split()[0] for n in names) + f" â€” {total_weight_g} g"
+    total_normalised_name = ", ".join(n.split()[0] for n in names) + f" — {total_weight_g} g"
 
     return FoodLookupResponse(
         food_detected         = len(foods_macros),
@@ -1344,10 +1059,10 @@ def food_lookup(req: FoodLookupRequest) -> FoodLookupResponse:
     )
 
 # _____________________
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 7 â€” POST /food/tags
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 7 — POST /food/tags
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FoodTagsRequest(BaseModel):
     usda_ids: List[int] = Field(
@@ -1361,7 +1076,7 @@ class CategoryItem(BaseModel):
     category:   str
     food_count: int
     insight:    str
-    severity:   str   # "Low" | "Medium" | "High" â€” AI-generated
+    severity:   str   # "Low" | "Medium" | "High" — AI-generated
 
 
 class FoodTagsResponse(BaseModel):
@@ -1370,19 +1085,19 @@ class FoodTagsResponse(BaseModel):
     top_categories:     List[CategoryItem]
 
 
-# Claude evaluates USDA category names â†’ insight (5-7 words) + severity
+# Claude evaluates USDA category names → insight (5-7 words) + severity
 _CATEGORY_EVAL_SYSTEM = (
     "You are a clinical gut-health dietitian AI.\n\n"
     "You will receive a list of USDA food category names with their food counts.\n"
     "For each category, return:\n\n"
-    "  insight  â€” exactly 5-7 words, specific gut effect, no punctuation at end\n"
+    "  insight  — exactly 5-7 words, specific gut effect, no punctuation at end\n"
     "             Good: 'Elevates intestinal permeability and inflammation risk'\n"
     "             Bad:  'This is bad for your gut'\n\n"
-    "  severity â€” gut-health severity for most people:\n"
-    "     'Low'    â†’ gut-friendly or neutral (vegetables, fruits, lean proteins, whole grains)\n"
-    "     'Medium' â†’ moderate concern for sensitive individuals (dairy, eggs, legumes, nuts)\n"
-    "     'High'   â†’ significant gut irritant (fried foods, fast food, processed snacks, sweets)\n\n"
-    "Return ONLY valid JSON â€” no markdown:\n"
+    "  severity — gut-health severity for most people:\n"
+    "     'Low'    → gut-friendly or neutral (vegetables, fruits, lean proteins, whole grains)\n"
+    "     'Medium' → moderate concern for sensitive individuals (dairy, eggs, legumes, nuts)\n"
+    "     'High'   → significant gut irritant (fried foods, fast food, processed snacks, sweets)\n\n"
+    "Return ONLY valid JSON — no markdown:\n"
     '{"results": [{"category": "<name>", "insight": "<5-7 words>", "severity": "Low|Medium|High"}, ...]}\n'
     "Include ALL categories provided, in the same order."
 )
@@ -1394,7 +1109,7 @@ def _claude_category_eval(
 ) -> dict[str, dict]:
     """
     Send USDA category names + counts to Claude.
-    Returns dict: category_name â†’ {insight, severity}
+    Returns dict: category_name → {insight, severity}
     """
     fallback = {
         cat: {"insight": "Monitor intake for gut sensitivity", "severity": "Medium"}
@@ -1438,7 +1153,7 @@ def _claude_category_eval(
 )
 def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
     """
-    Pass a list of USDA food IDs â€” typically all foods linked to a user's gut
+    Pass a list of USDA food IDs — typically all foods linked to a user's gut
     symptoms. Each ID is resolved via the USDA API (cache-first) to get its
     official **USDA food category** (e.g. "Dairy and Egg Products", "Fast Foods").
 
@@ -1448,7 +1163,7 @@ def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
     - a **severity rating** (Low / Medium / High) based on how harmful that
       category typically is for gut health
 
-    Both insight and severity are fully AI-generated â€” nothing is hardcoded.
+    Both insight and severity are fully AI-generated — nothing is hardcoded.
     """
     if _MOCK_MODE:
         return FoodTagsResponse(**_mk_mock_food_tags(req))
@@ -1460,7 +1175,7 @@ def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
     if _state.claude_client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Claude client not available â€” check Claude_API_key in .env",
+            detail="Claude client not available — check Claude_API_key in .env",
         )
 
     from collections import Counter
@@ -1484,7 +1199,7 @@ def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
                 "No USDA food categories found for the provided IDs. "
-                "This usually means the foods are not yet in the USDA cache â€” "
+                "This usually means the foods are not yet in the USDA cache — "
                 "try fetching them via /food/lookup/{usda_id} first."
             ),
         )
@@ -1508,9 +1223,9 @@ def food_tags_batch(req: FoodTagsRequest) -> FoodTagsResponse:
 
 from food_symptom_predictor import (FoodLogEntry, SymptomLogEntry, FoodCausationResult,SymptomPrediction, SYMPTOM_WINDOWS,predict_causation_by_time,group_composite_meals,)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 8 â€” POST /predict/food-symptom
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 8 — POST /predict/food-symptom
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FoodLogInput(BaseModel):
     usda_id:   int
@@ -1524,13 +1239,13 @@ class SymptomLogInput(BaseModel):
     logged_at: datetime
  
  
-# â”€â”€ Shared helper: usda_id â†’ short display name â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Shared helper: usda_id → short display name ───────────────────────────────
  
 def _usda_id_to_short_name(usda_id: int) -> str:
     """
-    Memory cache â†’ MongoDB â†’ USDA API (in that order).
+    Memory cache → MongoDB → USDA API (in that order).
     Returns first comma-segment of the USDA description, e.g.:
-        "Chicken, broiler, breast, cooked" â†’ "Chicken"
+        "Chicken, broiler, breast, cooked" → "Chicken"
     """
     if _state.usda_client is None:
         return f"Food #{usda_id}"
@@ -1538,7 +1253,7 @@ def _usda_id_to_short_name(usda_id: int) -> str:
     return full.split(",")[0].strip()
  
  
-# â”€â”€ Shared helper: build food_logs_named list from request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Shared helper: build food_logs_named list from request ────────────────────
  
 def _resolve_food_logs(food_logs: list[FoodLogInput]) -> list[dict]:
     """
@@ -1562,24 +1277,24 @@ def _resolve_food_logs(food_logs: list[FoodLogInput]) -> list[dict]:
     ]
  
  
-# â”€â”€ Shared helper: normalise intensity case â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Shared helper: normalise intensity case ───────────────────────────────────
  
 _INTENSITY_NORMALISE = {v.lower(): v for v in ("Mild", "Moderate", "Severe")}
  
 def _normalise_intensity(raw: str) -> str:
-    """'mild' â†’ 'Mild', 'MODERATE' â†’ 'Moderate', 'high' â†’ kept as-is."""
+    """'mild' → 'Mild', 'MODERATE' → 'Moderate', 'high' → kept as-is."""
     return _INTENSITY_NORMALISE.get(raw.lower(), raw)
  
  
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# SECTION A â€” ENDPOINT 8  POST /predict/food-symptom
-# ENDPOINT â€” POST /recommend/safe_food
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION A — ENDPOINT 8  POST /predict/food-symptom
+# ENDPOINT — POST /recommend/safe_food
+# ─────────────────────────────────────────────────────────────────────────────
 
 from food_recommender import recommend_safe_from_logs
 
 
-# Shared request model â€” used by BOTH /recommend/safe_food and /recommend/risky_food
+# Shared request model — used by BOTH /recommend/safe_food and /recommend/risky_food
 class FoodAnalysisRequest(BaseModel):
     food_logs:    List[FoodLogInput]    = Field(..., min_length=1,
                                                description="Food entries (usda_id + weight_g + logged_at)")
@@ -1614,11 +1329,11 @@ def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
  
     if _MOCK_MODE:
         return SafeFoodResponse(**_mk_mock_safe_food(req))
-    # â”€â”€ Validate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Validate ──────────────────────────────────────────────────────────────
     if not _state.recommender_ready:
         raise HTTPException(503, f"Recommender unavailable: {_state.recommender_error or 'unknown'}")
     if not _state.usda_ready:
-        raise HTTPException(503, "USDA client unavailable â€” cannot resolve food names.")
+        raise HTTPException(503, "USDA client unavailable — cannot resolve food names.")
  
     for sl in req.symptom_logs:
         normalised = _normalise_intensity(sl.intensity)
@@ -1629,7 +1344,7 @@ def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
                 f"Accepted: Mild, Moderate, Severe (case-insensitive).",
             )
  
-    # â”€â”€ Resolve usda_id â†’ food names â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Resolve usda_id → food names ─────────────────────────────────────────
     food_logs_named = _resolve_food_logs(req.food_logs)
  
     symptom_logs_plain = [
@@ -1641,11 +1356,11 @@ def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
         for sl in req.symptom_logs
     ]
  
-    # â”€â”€ Count composites for metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Count composites for metadata ─────────────────────────────────────────
     grouped       = group_composite_meals(food_logs_named)
     composite_cnt = sum(1 for m in grouped if m["is_composite"])
  
-    # â”€â”€ Claude safe food recommendation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Claude safe food recommendation ──────────────────────────────────────
     try:
         safe_foods = recommend_safe_from_logs(
             food_logs_named = food_logs_named,
@@ -1653,7 +1368,7 @@ def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
             n               = req.n,
         )
     except Exception as exc:
-        log.exception("recommend/safe-foods â€” recommendation failed")
+        log.exception("recommend/safe-foods — recommendation failed")
         raise HTTPException(500, f"Recommendation error: {exc}")
  
     if not safe_foods:
@@ -1674,7 +1389,7 @@ def recommend_safe_foods_endpoint(req: FoodAnalysisRequest) -> SafeFoodResponse:
         source_note              = source_note,
     )
  
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
  
 # Alias so the endpoint signature stays self-documenting
 FoodSymptomPredictRequest = FoodAnalysisRequest
@@ -1709,11 +1424,11 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
  
     if _MOCK_MODE:
         return FoodSymptomPredictResponse(**_mk_mock_risky_food(req))
-    # â”€â”€ Validate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Validate ──────────────────────────────────────────────────────────────
     if not _state.predictor_ready:
         raise HTTPException(503, f"Predictor unavailable: {_state.predictor_error or 'unknown'}")
     if not _state.usda_ready:
-        raise HTTPException(503, "USDA client unavailable â€” cannot resolve food names.")
+        raise HTTPException(503, "USDA client unavailable — cannot resolve food names.")
  
     for sl in req.symptom_logs:
         normalised = _normalise_intensity(sl.intensity)
@@ -1724,7 +1439,7 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
                 f"Accepted values: Mild, Moderate, Severe (case-insensitive).",
             )
  
-    # â”€â”€ Resolve usda_id â†’ food names â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Resolve usda_id → food names ─────────────────────────────────────────
     food_logs_named = _resolve_food_logs(req.food_logs)
  
     symptom_logs_plain = [
@@ -1736,18 +1451,18 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
         for sl in req.symptom_logs
     ]
  
-    # â”€â”€ Detect composites (for response metadata) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Detect composites (for response metadata) ─────────────────────────────
     grouped = group_composite_meals(food_logs_named)
     composite_count = sum(1 for m in grouped if m["is_composite"])
  
-    # â”€â”€ Claude temporal causation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Claude temporal causation ─────────────────────────────────────────────
     try:
         predictions = predict_causation_by_time(
             food_logs_named = food_logs_named,
             symptom_logs    = symptom_logs_plain,
         )
     except Exception as exc:
-        log.exception("predict/food-symptom â€” temporal analysis failed")
+        log.exception("predict/food-symptom — temporal analysis failed")
         raise HTTPException(500, f"Prediction error: {exc}")
 
     return FoodSymptomPredictResponse(
@@ -1759,9 +1474,9 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
     )
  
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT â€” POST /recommend/triggers_food
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/triggers_food
+# ─────────────────────────────────────────────────────────────────────────────
 
 class TriggersFoodRequest(BaseModel):
     symptom_name: str = Field(..., min_length=2, max_length=100,
@@ -1795,7 +1510,7 @@ def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
     if _MOCK_MODE:
         return TriggersFoodResponse(**_mk_mock_triggers_food(req))
     if _state.claude_client is None:
-        raise HTTPException(503, "Claude client not available â€” check Claude_API_key in .env")
+        raise HTTPException(503, "Claude client not available — check Claude_API_key in .env")
 
     foods_str = ", ".join(req.food_name)
     user_msg  = (
@@ -1812,7 +1527,7 @@ def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
         )
         insight = msg.content[0].text.strip()
     except Exception as exc:
-        log.exception("recommend/triggers_food â€” Claude call failed")
+        log.exception("recommend/triggers_food — Claude call failed")
         raise HTTPException(500, f"AI insight generation failed: {exc}")
 
     return TriggersFoodResponse(
@@ -1821,9 +1536,9 @@ def recommend_triggers_food(req: TriggersFoodRequest) -> TriggersFoodResponse:
         insight       = insight,
     )
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT â€” POST /recommend/gentle_note
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/gentle_note
+# ─────────────────────────────────────────────────────────────────────────────
 
 import hashlib as _hashlib
 
@@ -1858,7 +1573,7 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
 
     if _MOCK_MODE:
         return GentleNoteResponse(
-            note="Keep up the great work â€” your balanced meals are supporting your gut health well.",
+            note="Keep up the great work — your balanced meals are supporting your gut health well.",
             symptoms_found=len(req.symptom_logs),
             trigger_foods=0,
             cached=False,
@@ -1869,7 +1584,7 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
     if not _state.usda_ready:
         raise HTTPException(503, "USDA client unavailable.")
 
-    # â”€â”€ Resolve usda_id â†’ food names (uses USDA search cache) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Resolve usda_id → food names (uses USDA search cache) ────────────────
     food_logs_named = _resolve_food_logs(req.food_logs)
 
     symptom_logs_plain = [
@@ -1881,14 +1596,14 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
         for sl in req.symptom_logs
     ]
 
-    # â”€â”€ Run pure-logic trigger finder (zero Claude calls) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Run pure-logic trigger finder (zero Claude calls) ─────────────────────
     from food_symptom_predictor import predict_causation_by_time
     predictions: dict[str, list[str]] = predict_causation_by_time(
         food_logs_named, symptom_logs_plain
     )
 
     # Build compact trigger summary: top 2 symptoms + their top 2 trigger foods
-    # This is what we feed Claude â€” never the full 168-entry log
+    # This is what we feed Claude — never the full 168-entry log
     trigger_lines: list[str] = []
     all_trigger_foods: set[str] = set()
     for symptom, foods in list(predictions.items())[:2]:
@@ -1900,7 +1615,7 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
     n_symptoms = len([s for s, f in predictions.items() if f])
     n_triggers = len(all_trigger_foods)
 
-    # If no triggers found â€” a gentle positive note still helps
+    # If no triggers found — a gentle positive note still helps
     if not trigger_lines:
         dominant_symptom = req.symptom_logs[0].symptom if req.symptom_logs else None
         summary = (
@@ -1911,19 +1626,19 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
     else:
         summary = (
             f"The user logged {len(req.food_logs)} food entries. "
-            f"Likely triggers â€” {'; '.join(trigger_lines)}."
+            f"Likely triggers — {'; '.join(trigger_lines)}."
         )
 
-    # â”€â”€ Cache key: SHA-256 of the compact trigger summary (not the raw logs) â”€â”€
+    # ── Cache key: SHA-256 of the compact trigger summary (not the raw logs) ──
     cache_key = _hashlib.sha256(summary.encode()).hexdigest()
 
-    # â”€â”€ Cache lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Cache lookup ──────────────────────────────────────────────────────────
     mongo_db = getattr(_state, "_mongo_db", None)
     if mongo_db is not None:
         try:
             cached_note = mongo_db.get_gentle_note(cache_key)
             if cached_note:
-                log.info(f"gentle_note cache HIT key={cache_key[:12]}â€¦")
+                log.info(f"gentle_note cache HIT key={cache_key[:12]}…")
                 return GentleNoteResponse(
                     note=cached_note,
                     symptoms_found=n_symptoms,
@@ -1933,7 +1648,7 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
         except Exception as exc:
             log.warning(f"gentle_note cache read failed: {exc}")
 
-    # â”€â”€ Claude call â€” Haiku, max 60 tokens (one sentence) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Claude call — Haiku, max 60 tokens (one sentence) ────────────────────
     if _state.claude_client is None:
         raise HTTPException(503, "Claude client unavailable.")
 
@@ -1946,14 +1661,14 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
         )
         note = msg.content[0].text.strip().strip('"')
     except Exception as exc:
-        log.exception("gentle_note â€” Claude call failed")
+        log.exception("gentle_note — Claude call failed")
         raise HTTPException(500, f"Note generation failed: {exc}")
 
-    # â”€â”€ Store in cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Store in cache ────────────────────────────────────────────────────────
     if mongo_db is not None:
         try:
             mongo_db.set_gentle_note(cache_key, note)
-            log.info(f"gentle_note cache SET key={cache_key[:12]}â€¦")
+            log.info(f"gentle_note cache SET key={cache_key[:12]}…")
         except Exception as exc:
             log.warning(f"gentle_note cache write failed: {exc}")
 
@@ -1964,9 +1679,9 @@ def recommend_gentle_note(req: FoodAnalysisRequest) -> GentleNoteResponse:
         cached=False,
     )
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT â€” POST /recommend/food_trigger_check
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/food_trigger_check
+# ─────────────────────────────────────────────────────────────────────────────
 
 import hashlib as _hashlib2
 
@@ -1981,7 +1696,7 @@ _TRIGGER_NOTE_SYSTEM = (
 class FoodTriggerCheckRequest(BaseModel):
     predictions: dict[str, list[str]] = Field(
         ...,
-        description="Symptom â†’ list of food names (output from /recommend/risky_food)",
+        description="Symptom → list of food names (output from /recommend/risky_food)",
         example={
             "Heartburn": ["Fish"],
             "Bloating":  ["Beans"],
@@ -2010,8 +1725,8 @@ class SymptomRiskDetail(BaseModel):
 class FoodTriggerCheckResponse(BaseModel):
     target_food:          str
     usda_description:     str         # resolved USDA name (or food name if not found)
-    triggered_count:      int         # x â€” symptoms where this food appeared
-    total_symptoms:       int         # y â€” total symptoms in predictions
+    triggered_count:      int         # x — symptoms where this food appeared
+    total_symptoms:       int         # y — total symptoms in predictions
     triggered_symptoms:   list[str]   # which symptoms the food appeared in
     symptom_risks:        list[SymptomRiskDetail]  # nutrient risk per triggered symptom
     note:                 str         # one Claude Haiku sentence
@@ -2050,7 +1765,7 @@ def _build_nutrient_snapshot_from_usda(
         "Pass the predictions dict from /recommend/risky_food and a target food name. "
         "Returns x/y symptom count, per-symptom nutrient risk scores from USDA data, "
         "and one Claude Haiku sentence summarising the finding. "
-        "All risk scoring is pure logic â€” no Claude for analysis."
+        "All risk scoring is pure logic — no Claude for analysis."
     ),
 )
 def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse:
@@ -2074,7 +1789,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
     target = req.target_food.strip()
     target_lower = target.lower()
 
-    # â”€â”€ Step 1: find which symptoms contain the target food (substring match) â”€â”€
+    # ── Step 1: find which symptoms contain the target food (substring match) ──
     triggered_symptoms: list[str] = []
     for symptom, foods in req.predictions.items():
         for food in foods:
@@ -2085,7 +1800,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
     total_symptoms   = len(req.predictions)
     triggered_count  = len(triggered_symptoms)
 
-    # â”€â”€ Step 2: USDA search â†’ get nutrients (uses existing search cache) â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 2: USDA search → get nutrients (uses existing search cache) ───────
     usda_data        = None
     usda_description = target
     usda_matches     = _state.usda_client.search(target, top_k=1)
@@ -2103,7 +1818,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         from food_symptom_predictor import NutrientSnapshot
         nutrients = NutrientSnapshot(description=target, portion_g=100.0)
 
-    # â”€â”€ Step 3: pure-logic risk scoring per triggered symptom â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 3: pure-logic risk scoring per triggered symptom ─────────────────
     from food_symptom_predictor import _nutrient_risk, _keyword_risk_score
 
     symptom_risks: list[SymptomRiskDetail] = []
@@ -2114,7 +1829,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         if usda_data:
             combined = round(n_risk * 0.70 + k_risk * 0.30, 4)
         else:
-            # no USDA data â€” rely entirely on keyword heuristic
+            # no USDA data — rely entirely on keyword heuristic
             combined = round(k_risk, 4)
 
         symptom_risks.append(SymptomRiskDetail(
@@ -2129,7 +1844,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
     # Sort by combined risk descending
     symptom_risks.sort(key=lambda r: r.combined_risk, reverse=True)
 
-    # â”€â”€ Step 4: build compact summary for Claude (not the raw logs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 4: build compact summary for Claude (not the raw logs) ────────────
     top_symptom   = symptom_risks[0].symptom if symptom_risks else (triggered_symptoms[0] if triggered_symptoms else "no symptoms")
     top_nutrients = symptom_risks[0].risk_nutrients[:2] if symptom_risks else []
 
@@ -2143,7 +1858,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         f"Highest risk symptom: {top_symptom}.{nutrient_hint}"
     )
 
-    # â”€â”€ Step 5: cache key based on compact summary (not raw input) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 5: cache key based on compact summary (not raw input) ─────────────
     cache_key  = _hashlib2.sha256(summary.encode()).hexdigest()
     mongo_db   = getattr(_state, "_mongo_db", None)
 
@@ -2151,7 +1866,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         try:
             cached_note = mongo_db.get_gentle_note(cache_key)
             if cached_note:
-                log.info(f"food_trigger_check cache HIT key={cache_key[:12]}â€¦")
+                log.info(f"food_trigger_check cache HIT key={cache_key[:12]}…")
                 return FoodTriggerCheckResponse(
                     target_food       = target,
                     usda_description  = usda_description,
@@ -2165,7 +1880,7 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         except Exception as exc:
             log.warning(f"food_trigger_check cache read failed: {exc}")
 
-    # â”€â”€ Step 6: Claude Haiku â€” one sentence only â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 6: Claude Haiku — one sentence only ───────────────────────────────
     if _state.claude_client is None:
         note = (
             f"{target} appeared in {triggered_count} of {total_symptoms} tracked symptoms."
@@ -2180,16 +1895,16 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
             )
             note = msg.content[0].text.strip().strip('"')
         except Exception as exc:
-            log.exception("food_trigger_check â€” Claude call failed")
+            log.exception("food_trigger_check — Claude call failed")
             note = (
                 f"{target} appeared in {triggered_count} of {total_symptoms} tracked symptoms."
             )
 
-    # â”€â”€ Step 7: store in cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 7: store in cache ────────────────────────────────────────────────
     if mongo_db is not None:
         try:
             mongo_db.set_gentle_note(cache_key, note)
-            log.info(f"food_trigger_check cache SET key={cache_key[:12]}â€¦")
+            log.info(f"food_trigger_check cache SET key={cache_key[:12]}…")
         except Exception as exc:
             log.warning(f"food_trigger_check cache write failed: {exc}")
 
@@ -2204,9 +1919,9 @@ def food_trigger_check(req: FoodTriggerCheckRequest) -> FoodTriggerCheckResponse
         cached             = False,
     )
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT â€” POST /recommend/symptom_culprit
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/symptom_culprit
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SymptomCulpritRequest(BaseModel):
     food_logs:    List[FoodLogInput]    = Field(
@@ -2216,7 +1931,8 @@ class SymptomCulpritRequest(BaseModel):
     symptom_logs: List[SymptomLogInput] = Field(
         ...,
         min_length=1,
-        description="One or more symptom events to investigate",
+        max_length=1,
+        description="Exactly one symptom event to investigate (symptom + intensity + logged_at)",
     )
 
 
@@ -2252,176 +1968,509 @@ _CULPRIT_WINDOW: dict[str, tuple[int, int]] = {
 }
 _CULPRIT_DEFAULT_WINDOW = (30, 480)
 
+
 @app.post(
     "/recommend/symptom_culprit",
-    response_model=SymptomCulpritResponse,   # â† back to single object
-    summary="Given food logs and symptom events, identify which foods likely caused them",
+    response_model=SymptomCulpritResponse,
+    summary="Given food logs and one symptom event, identify which foods likely caused it",
     description=(
-        "For each symptom log, filters foods within the clinical digestion window and ranks "
-        "them by nutrient-risk + keyword-risk. All symptoms are merged into one response. "
-        "Zero Claude calls â€” pure logic only."
+        "Filters foods eaten within the clinical digestion window before the symptom, "
+        "then ranks them by nutrient-risk + keyword-risk scores using USDA data. "
+        "Zero Claude calls — pure logic only."
     ),
 )
 def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
 
-    if req.food_logs and not _state.usda_ready:
+    symptom   = req.symptom_logs[0].symptom.strip()
+    intensity = _normalise_intensity(req.symptom_logs[0].intensity)
+    sym_time  = req.symptom_logs[0].logged_at
+    # ensure timezone-aware
+    if sym_time.tzinfo is None:
+        sym_time = sym_time.replace(tzinfo=timezone.utc)
+
+    # ── No food logs provided ────────────────────────────────────────────────
+    if not req.food_logs:
+        return SymptomCulpritResponse(
+            symptom          = symptom,
+            intensity        = intensity,
+            culprit_foods    = [],
+            culprit_details  = [],
+            foods_in_window  = 0,
+            foods_scanned    = 0,
+            message          = "No food logs provided. Cannot identify culprit foods.",
+        )
+
+    # ── Step 1: filter foods within the clinical digestion window ─────────────
+    win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)  # minutes
+
+    candidates: list[dict] = []
+    for fl in req.food_logs:
+        food_time = fl.logged_at
+        if food_time.tzinfo is None:
+            food_time = food_time.replace(tzinfo=timezone.utc)
+        delta_minutes = (sym_time - food_time).total_seconds() / 60.0
+        if win_min <= delta_minutes <= win_max:
+            candidates.append({
+                "usda_id":      fl.usda_id,
+                "weight_g":     fl.weight_g,
+                "logged_at":    fl.logged_at,
+                "hours_before": round(delta_minutes / 60.0, 2),
+            })
+
+    foods_scanned   = len(req.food_logs)
+    foods_in_window = len(candidates)
+
+    if not candidates:
+        win_h_min = round(win_min / 60, 1)
+        win_h_max = round(win_max / 60, 1)
+        return SymptomCulpritResponse(
+            symptom          = symptom,
+            intensity        = intensity,
+            culprit_foods    = [],
+            culprit_details  = [],
+            foods_in_window  = 0,
+            foods_scanned    = foods_scanned,
+            message          = (
+                f"No food was eaten within the clinical digestion window "
+                f"({win_h_min}–{win_h_max} hours) before this {symptom} event. "
+                f"Scanned {foods_scanned} food log(s)."
+            ),
+        )
+
+    # ── Step 2: resolve USDA descriptions (search cache → MongoDB → API) ──────
+    if not _state.usda_ready:
         raise HTTPException(503, f"USDA client unavailable: {_state.usda_error or 'unknown'}")
 
+    name_cache: dict[int, str] = {}
+    for c in candidates:
+        uid = c["usda_id"]
+        if uid not in name_cache:
+            name_cache[uid] = _state.usda_client.get_description(uid)
+
+    # ── Step 3: nutrient-risk + keyword-risk per candidate ────────────────────
     from food_symptom_predictor import (
         NutrientSnapshot, _nutrient_risk, _keyword_risk_score,
     )
 
-    # â”€â”€ Pre-cache USDA lookups once across all symptoms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    name_cache:     dict[int, str]  = {}
-    nutrient_cache: dict[int, dict] = {}
+    scored: list[CulpritFoodDetail] = []
+    for c in candidates:
+        uid       = c["usda_id"]
+        food_name = name_cache[uid]
+        weight_g  = c["weight_g"]
 
-    if req.food_logs and _state.usda_ready:
-        for fl in req.food_logs:
-            uid = fl.usda_id
-            if uid not in name_cache:
-                name_cache[uid]     = _state.usda_client.get_description(uid)
-                nutrient_cache[uid] = _state.usda_client.get_nutrients(uid) or {}
+        # Fetch USDA nutrients (3-tier cache: in-process → MongoDB → API)
+        usda_data = _state.usda_client.get_nutrients(uid)
+        if usda_data:
+            scale = weight_g / 100.0
+            def sv(k):
+                v = usda_data.get(k)
+                return round(float(v) * scale, 3) if v is not None else None
+            nutrients = NutrientSnapshot(
+                description  = food_name,
+                calories     = sv("calories"),    protein  = sv("protein"),
+                total_fat    = sv("total_fat"),   carbs    = sv("carbs"),
+                sodium       = sv("sodium"),      sat_fat  = sv("sat_fat"),
+                cholesterol  = sv("cholesterol"), sugar    = sv("sugar"),
+                portion_g    = weight_g,
+            )
+            n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
+            k_risk             = _keyword_risk_score(food_name, symptom)
+            combined           = round(n_risk * 0.70 + k_risk * 0.30, 4)
+        else:
+            # No USDA data — keyword heuristic only
+            nutrients  = NutrientSnapshot(description=food_name, portion_g=weight_g)
+            n_risk     = 0.0
+            risk_notes = []
+            k_risk     = _keyword_risk_score(food_name, symptom)
+            combined   = round(k_risk, 4)
 
-    foods_scanned = len(req.food_logs)
+        scored.append(CulpritFoodDetail(
+            usda_id       = uid,
+            food_name     = food_name,
+            weight_g      = weight_g,
+            hours_before  = c["hours_before"],
+            nutrient_risk = round(n_risk, 4),
+            keyword_risk  = round(k_risk, 4),
+            combined_risk = combined,
+            risk_level    = _risk_level_label(combined),
+            risk_nutrients= risk_notes,
+        ))
 
-    # â”€â”€ Per-symptom results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Collected for merging: list of (symptom_str, intensity_str, scored_list, foods_in_window)
-    per_symptom_results: list[tuple[str, str, list[CulpritFoodDetail], int]] = []
+    # ── Step 4: sort by combined_risk descending ──────────────────────────────
+    scored.sort(key=lambda x: x.combined_risk, reverse=True)
 
-    for sym_log in req.symptom_logs:
-        symptom   = sym_log.symptom.strip()
-        intensity = _normalise_intensity(sym_log.intensity)
-        sym_time  = sym_log.logged_at
+    culprit_ids = [d.usda_id for d in scored]
+
+    win_h_min = round(win_min / 60, 1)
+    win_h_max = round(win_max / 60, 1)
+    message = (
+        f"Found {foods_in_window} food(s) eaten within the {symptom} digestion window "
+        f"({win_h_min}–{win_h_max} hours before symptom) out of {foods_scanned} scanned. "
+        f"Ranked by nutrient-risk + keyword-risk using USDA data. Zero Claude calls."
+    )
+
+    return SymptomCulpritResponse(
+        symptom          = symptom,
+        intensity        = intensity,
+        culprit_foods    = culprit_ids,
+        culprit_details  = scored,
+        foods_in_window  = foods_in_window,
+        foods_scanned    = foods_scanned,
+        message          = message,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT — POST /recommend/food_note
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FOOD_NOTE_NO_SYMPTOMS_SYSTEM = (
+    "You are a concise gut-health coach. "
+    "Write exactly ONE sentence of 15-18 words warning a user about a food "
+    "they eat frequently but have no symptom history for yet. "
+    "Always mention the food name and its likely gut symptom by name. "
+    "Warm, specific, no markdown, no preamble. Return only the sentence."
+)
+
+
+class FoodNoteLogItem(BaseModel):
+    food_name: str      = Field(..., min_length=1, max_length=200,
+                                description="Food name as typed by the user")
+    weight_g:  float    = Field(..., gt=0)
+    logged_at: datetime
+
+
+class FoodNoteRequest(BaseModel):
+    food_logs:    List[FoodNoteLogItem]   = Field(
+        default_factory=list,
+        description="Last 3 months of food logs with food_name (not usda_id)",
+    )
+    symptom_logs: List[SymptomLogInput]  = Field(
+        default_factory=list,
+        description="Symptom logs. Empty = user has not logged any symptoms yet.",
+    )
+    target_food:  str                    = Field(
+        ..., min_length=1, max_length=200,
+        description="The food name to generate a note about",
+    )
+
+
+class FoodNoteResponse(BaseModel):
+    target_food:      str
+    usda_description: Optional[str]  = None   # resolved USDA name, if found
+    case:             str            # "with_symptoms" | "no_symptoms" | "no_logs"
+    note:             str
+    cached:           bool
+
+
+def _food_name_key(name: str) -> str:
+    """Normalised cache key for a food name string."""
+    return hashlib.sha256(" ".join(name.lower().split()).encode()).hexdigest()
+
+
+def _resolve_food_name_to_usda(
+    food_name: str,
+    mongo_db,
+) -> tuple[Optional[int], Optional[str]]:
+    """
+    food_name → (usda_id, usda_description).
+    Cache order: MongoDB food_name_usda_cache → USDA search API.
+    Returns (None, None) if nothing found.
+    """
+    name_key = _food_name_key(food_name)
+
+    # 1. MongoDB food_name_usda_cache
+    if mongo_db is not None:
+        try:
+            cached = mongo_db.get_food_name_usda(name_key)
+            if cached:
+                return cached["usda_id"], cached["usda_description"]
+        except Exception as exc:
+            log.warning(f"food_name_usda_cache read failed: {exc}")
+
+    # 2. USDA search (hits usda_search_cache → API internally)
+    if not _state.usda_ready:
+        return None, None
+
+    matches = _state.usda_client.search(food_name, top_k=1)
+    if not matches:
+        return None, None
+
+    usda_id   = matches[0]["usda_id"]
+    usda_desc = matches[0]["usda_description"]
+
+    if mongo_db is not None:
+        try:
+            mongo_db.set_food_name_usda(name_key, usda_id, usda_desc)
+        except Exception as exc:
+            log.warning(f"food_name_usda_cache write failed: {exc}")
+
+    return usda_id, usda_desc
+
+
+@app.post(
+    "/recommend/food_note",
+    response_model=FoodNoteResponse,
+    summary="Generate a personalised note about a target food based on 3-month food + symptom logs",
+    description=(
+        "Three cases handled:\n"
+        "1. food_logs + symptom_logs → temporal analysis, count how often target_food "
+        "preceded symptoms, return factual note. Zero Claude calls.\n"
+        "2. food_logs but no symptom_logs → USDA category + nutrient risk → "
+        "Claude Haiku 15-18 word warning. Cached by food+frequency.\n"
+        "3. No food_logs → static response, no Claude, no USDA.\n"
+        "All food_name → usda_id resolutions are cached in MongoDB permanently."
+    ),
+)
+def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
+
+    if _MOCK_MODE:
+        return FoodNoteResponse(
+            target_food="chicken", usda_description="Chicken, broiler, breast",
+            case="with_symptoms",
+            note="chicken is a Poultry type food that triggered Heartburn about 2 times in the last 3 months.",
+            cached=False,
+        )
+
+    mongo_db   = getattr(_state, "_mongo_db", None)
+    target     = req.target_food.strip()
+    target_low = target.lower()
+
+    # ── CASE 3: no food logs at all ──────────────────────────────────────────
+    if not req.food_logs:
+        return FoodNoteResponse(
+            target_food      = target,
+            usda_description = None,
+            case             = "no_logs",
+            note             = (
+                f"You don't have enough food logs to analyse '{target}' yet. "
+                f"Start logging meals to get personalised gut-health insights."
+            ),
+            cached           = False,
+        )
+
+    # ── Resolve target_food → USDA (database first, then USDA API) ───────────
+    target_usda_id, target_usda_desc = _resolve_food_name_to_usda(target, mongo_db)
+
+    # ── Resolve ALL food_logs food_names → USDA (batch, database first) ──────
+    # Build a name→(usda_id, usda_desc) cache for every unique food in the logs
+    name_usda: dict[str, tuple[Optional[int], Optional[str]]] = {}
+    for fl in req.food_logs:
+        fn = fl.food_name.strip()
+        if fn not in name_usda:
+            name_usda[fn] = _resolve_food_name_to_usda(fn, mongo_db)
+
+    # ── Count how often target_food appears in food_logs (partial match) ──────
+    target_count = sum(
+        1 for fl in req.food_logs
+        if target_low in fl.food_name.lower() or fl.food_name.lower() in target_low
+    )
+
+    # ── Date range from first to last food log entry ──────────────────────────
+    timestamps  = sorted(fl.logged_at for fl in req.food_logs)
+    date_start  = timestamps[0]
+    date_end    = timestamps[-1]
+    delta_days  = max(1, (date_end - date_start).days)
+    months_span = round(delta_days / 30.1, 1)
+    months_label = f"{months_span} month{'s' if months_span != 1.0 else ''}"
+
+    # ── CASE 2: food_logs present but NO symptom_logs ─────────────────────────
+    if not req.symptom_logs:
+
+        # Build cache key: target_usda + frequency bucket (avoids stale notes)
+        freq_bucket  = target_count // 5  # groups 0-4, 5-9, 10-14 … into one cache slot
+        note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}"
+        note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
+
+        if mongo_db is not None:
+            try:
+                cached_note = mongo_db.get_food_note(note_cache_key)
+                if cached_note:
+                    return FoodNoteResponse(
+                        target_food      = target,
+                        usda_description = target_usda_desc,
+                        case             = "no_symptoms",
+                        note             = cached_note,
+                        cached           = True,
+                    )
+            except Exception as exc:
+                log.warning(f"food_note cache read failed: {exc}")
+
+        # Get food category tag (reuses food_tag_classifier)
+        category = "food"
+        if _state.ftc_ready and target_usda_id:
+            try:
+                from food_tag_classifier import classify_food_tags
+                tag_result = classify_food_tags(target_usda_id)
+                category   = tag_result.primary_tag
+            except Exception:
+                pass
+
+        # Get top likely symptom via _nutrient_risk at 100g
+        top_symptom = "digestive discomfort"
+        if target_usda_id and _state.usda_ready:
+            try:
+                from food_symptom_predictor import NutrientSnapshot, _nutrient_risk
+                usda_data = _state.usda_client.get_nutrients(target_usda_id)
+                if usda_data:
+                    def _sv(k):
+                        v = usda_data.get(k)
+                        return round(float(v), 3) if v is not None else None
+                    nutrients = NutrientSnapshot(
+                        description  = target_usda_desc or target,
+                        calories     = _sv("calories"),   protein  = _sv("protein"),
+                        total_fat    = _sv("total_fat"),  carbs    = _sv("carbs"),
+                        sodium       = _sv("sodium"),     sat_fat  = _sv("sat_fat"),
+                        cholesterol  = _sv("cholesterol"),sugar    = _sv("sugar"),
+                        portion_g    = 100.0,
+                    )
+                    symptom_list = [
+                        "Heartburn","Bloating","Gas","Nausea","Abdominal Pain",
+                        "Cramps","Diarrhea","Constipation","Fatigue","Acid Reflux",
+                    ]
+                    scored = [
+                        (sym, _nutrient_risk(nutrients, sym)[0])
+                        for sym in symptom_list
+                    ]
+                    scored.sort(key=lambda x: x[1], reverse=True)
+                    if scored[0][1] > 0.10:
+                        top_symptom = scored[0][0]
+            except Exception:
+                pass
+
+        # Claude Haiku — one sentence, 15-18 words
+        summary = (
+            f"Food: {target_usda_desc or target} (category: {category}). "
+            f"Eaten {target_count} times in {months_label}. "
+            f"Top likely gut symptom based on nutrients: {top_symptom}. "
+            f"No symptoms have been logged yet by this user."
+        )
+
+        note = (
+            f"You haven't logged any symptoms yet, but you eat {target} frequently — "
+            f"{target} may trigger {top_symptom}."
+        )
+
+        if _state.claude_client is not None:
+            try:
+                msg = _state.claude_client.messages.create(
+                    model      = "claude-haiku-4-5-20251001",
+                    max_tokens = 60,
+                    system     = _FOOD_NOTE_NO_SYMPTOMS_SYSTEM,
+                    messages   = [{"role": "user", "content": summary}],
+                )
+                note = msg.content[0].text.strip().strip('"')
+            except Exception as exc:
+                log.warning(f"food_note Claude call failed: {exc}")
+
+        if mongo_db is not None:
+            try:
+                mongo_db.set_food_note(note_cache_key, note)
+            except Exception as exc:
+                log.warning(f"food_note cache write failed: {exc}")
+
+        return FoodNoteResponse(
+            target_food      = target,
+            usda_description = target_usda_desc,
+            case             = "no_symptoms",
+            note             = note,
+            cached           = False,
+        )
+
+    # ── CASE 1: food_logs + symptom_logs present ──────────────────────────────
+
+    # Temporal window: which symptom events had target_food eaten before them?
+    from culprit_food_finder import _parse_iso, _DIGESTION_WINDOW, _DEFAULT_WINDOW
+
+    trigger_count:  int               = 0
+    matched_symptoms: dict[str, int]  = {}
+
+    for sl in req.symptom_logs:
+        symptom    = sl.symptom.strip()
+        sym_time   = sl.logged_at
         if sym_time.tzinfo is None:
             sym_time = sym_time.replace(tzinfo=timezone.utc)
+        win_min, win_max = _DIGESTION_WINDOW.get(symptom, _DEFAULT_WINDOW)
 
-        if not req.food_logs:
-            per_symptom_results.append((symptom, intensity, [], 0))
-            continue
-
-        win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)
-
-        candidates: list[dict] = []
         for fl in req.food_logs:
+            if not (target_low in fl.food_name.lower() or fl.food_name.lower() in target_low):
+                continue
             food_time = fl.logged_at
             if food_time.tzinfo is None:
                 food_time = food_time.replace(tzinfo=timezone.utc)
-            delta_minutes = (sym_time - food_time).total_seconds() / 60.0
-            if win_min <= delta_minutes <= win_max:
-                candidates.append({
-                    "usda_id":      fl.usda_id,
-                    "weight_g":     fl.weight_g,
-                    "hours_before": round(delta_minutes / 60.0, 2),
-                })
+            delta_min = (sym_time - food_time).total_seconds() / 60.0
+            if win_min <= delta_min <= win_max:
+                trigger_count += 1
+                matched_symptoms[symptom] = matched_symptoms.get(symptom, 0) + 1
+                break  # count once per symptom event
 
-        if not candidates:
-            per_symptom_results.append((symptom, intensity, [], 0))
-            continue
+    # Top triggered symptom
+    top_sym = (
+        max(matched_symptoms, key=lambda k: matched_symptoms[k])
+        if matched_symptoms else req.symptom_logs[0].symptom
+    )
 
-        scored: list[CulpritFoodDetail] = []
-        for c in candidates:
-            uid       = c["usda_id"]
-            food_name = name_cache[uid]
-            weight_g  = c["weight_g"]
-            usda_data = nutrient_cache.get(uid, {})
+    # Get food category
+    category = "food"
+    if _state.ftc_ready and target_usda_id:
+        try:
+            from food_tag_classifier import classify_food_tags
+            tag_result = classify_food_tags(target_usda_id)
+            category   = tag_result.primary_tag
+        except Exception:
+            pass
 
-            if usda_data:
-                scale = weight_g / 100.0
-                def sv(k):
-                    v = usda_data.get(k)
-                    return round(float(v) * scale, 3) if v is not None else None
-                nutrients = NutrientSnapshot(
-                    description = food_name,
-                    calories    = sv("calories"),    protein  = sv("protein"),
-                    total_fat   = sv("total_fat"),   carbs    = sv("carbs"),
-                    sodium      = sv("sodium"),      sat_fat  = sv("sat_fat"),
-                    cholesterol = sv("cholesterol"), sugar    = sv("sugar"),
-                    portion_g   = weight_g,
+    # Build cache key and check cache
+    sym_sig       = "|".join(sorted(matched_symptoms.keys()))
+    note_key_raw  = f"with_symptoms|{target_usda_id or target_low}|{sym_sig}|{trigger_count}"
+    note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
+
+    if mongo_db is not None:
+        try:
+            cached_note = mongo_db.get_food_note(note_cache_key)
+            if cached_note:
+                return FoodNoteResponse(
+                    target_food      = target,
+                    usda_description = target_usda_desc,
+                    case             = "with_symptoms",
+                    note             = cached_note,
+                    cached           = True,
                 )
-                n_risk, risk_notes = _nutrient_risk(nutrients, symptom)
-                k_risk             = _keyword_risk_score(food_name, symptom)
-                combined           = round(n_risk * 0.70 + k_risk * 0.30, 4)
-            else:
-                nutrients  = NutrientSnapshot(description=food_name, portion_g=weight_g)
-                n_risk     = 0.0
-                risk_notes = []
-                k_risk     = _keyword_risk_score(food_name, symptom)
-                combined   = round(k_risk, 4)
+        except Exception as exc:
+            log.warning(f"food_note cache read failed (case1): {exc}")
 
-            scored.append(CulpritFoodDetail(
-                usda_id        = uid,
-                food_name      = food_name.split(",")[0].strip(),
-                weight_g       = weight_g,
-                hours_before   = c["hours_before"],
-                nutrient_risk  = round(n_risk, 4),
-                keyword_risk   = round(k_risk, 4),
-                combined_risk  = combined,
-                risk_level     = _risk_level_label(combined),
-                risk_nutrients = risk_notes,
-            ))
-
-        scored.sort(key=lambda x: x.combined_risk, reverse=True)
-        per_symptom_results.append((symptom, intensity, scored, len(candidates)))
-
-    # â”€â”€ Merge all per-symptom results into one response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    # No food logs at all
-    if not req.food_logs:
-        all_symptoms   = ", ".join(s for s, _, __, ___ in per_symptom_results)
-        all_intensities = ", ".join(i for _, i, __, ___ in per_symptom_results)
-        return SymptomCulpritResponse(
-            symptom         = all_symptoms,
-            intensity       = all_intensities,
-            culprit_foods   = [],
-            culprit_details = [],
-            foods_in_window = 0,
-            foods_scanned   = 0,
-            message         = "No food logs provided. Cannot identify culprit foods.",
-        )
-
-    # Deduplicate foods across symptoms â€” keep the entry with the highest combined_risk
-    merged_foods: dict[int, CulpritFoodDetail] = {}
-    for _, _, scored, _ in per_symptom_results:
-        for detail in scored:
-            existing = merged_foods.get(detail.usda_id)
-            if existing is None or detail.combined_risk > existing.combined_risk:
-                merged_foods[detail.usda_id] = detail
-
-    # Sort merged foods by combined_risk descending
-    merged_details = sorted(merged_foods.values(), key=lambda x: x.combined_risk, reverse=True)
-    culprit_ids    = [d.usda_id for d in merged_details]
-
-    # Unique foods that appeared in ANY symptom window
-    total_in_window = len(merged_foods)
-
-    # Symptom and intensity labels (deduplicated, order-preserved)
-    seen_symptoms   = list(dict.fromkeys(s          for s, _, __, ___ in per_symptom_results))
-    seen_intensities = list(dict.fromkeys(i         for _, i, __, ___ in per_symptom_results))
-    symptom_label   = ", ".join(seen_symptoms)
-    intensity_label = ", ".join(seen_intensities)
-
-    # Message
-    if merged_details:
-        short_names = [d.food_name.split(",")[0].strip() for d in merged_details[:3]]
-        message = (
-            f"{', '.join(short_names)} are possible triggers for this "
-            f"{symptom_label}."
+    # Build deterministic note — zero Claude
+    if trigger_count == 0:
+        note = (
+            f"'{target}' is a {category} type food eaten {target_count} time"
+            f"{'s' if target_count != 1 else ''} in the last {months_label}, "
+            f"but it was not found within the digestion window before any of your "
+            f"{len(req.symptom_logs)} logged symptom event"
+            f"{'s' if len(req.symptom_logs) != 1 else ''}."
         )
     else:
-        message = f"No culprit foods found within the digestion windows for {symptom_label}."
+        note = (
+            f"'{target}' is a {category} type food that triggered {top_sym} "
+            f"about {trigger_count} time{'s' if trigger_count != 1 else ''} "
+            f"in the last {months_label}."
+        )
 
-    return SymptomCulpritResponse(
-        symptom         = symptom_label,
-        intensity       = intensity_label,
-        culprit_foods   = culprit_ids,
-        culprit_details = merged_details,
-        foods_in_window = total_in_window,
-        foods_scanned   = foods_scanned,
-        message         = message,
+    if mongo_db is not None:
+        try:
+            mongo_db.set_food_note(note_cache_key, note)
+        except Exception as exc:
+            log.warning(f"food_note cache write failed (case1): {exc}")
+
+    return FoodNoteResponse(
+        target_food      = target,
+        usda_description = target_usda_desc,
+        case             = "with_symptoms",
+        note             = note,
+        cached           = False,
     )
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 9 â€” POST /predict/feedback
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 9 — POST /predict/feedback
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FeedbackRequest(BaseModel):
     user_id: str; usda_id: int; symptom: str; confirmed: bool
@@ -2444,7 +2493,7 @@ def predict_feedback(req: FeedbackRequest) -> FeedbackResponse:
     memory.apply_explicit_feedback(req.usda_id, req.symptom, req.confirmed)
     _state.memory_store.save(memory)
     prior  = memory.get_prior(req.usda_id, req.symptom)
-    action = "confirmed âœ…" if req.confirmed else "denied âœ—"
+    action = "confirmed ✅" if req.confirmed else "denied ✗"
     return FeedbackResponse(
         user_id=req.user_id, usda_id=req.usda_id, symptom=req.symptom,
         confirmed=req.confirmed, updated_prior=round(prior.posterior_mean, 4),
@@ -2452,15 +2501,15 @@ def predict_feedback(req: FeedbackRequest) -> FeedbackResponse:
         prior_confidence=round(prior.confidence, 4),
         personalisation_weight=memory.personalisation_weight,
         message=(
-            f"Feedback recorded â€” {action}. Prior for this foodâ†’{req.symptom} pair "
+            f"Feedback recorded — {action}. Prior for this food→{req.symptom} pair "
             f"updated to {prior.posterior_mean:.0%} based on {prior.observations} observations."
         ),
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 10 â€” GET /user/{user_id}/learning-summary
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 10 — GET /user/{user_id}/learning-summary
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SensitivityItem(BaseModel):
     food_symptom_pair: str; causation_probability: float
@@ -2474,10 +2523,10 @@ class LearningSummaryResponse(BaseModel):
 
 
 def _personalisation_stage(weight: float) -> str:
-    if   weight >= 0.75: return "Personalised â€” strong personal data, minimal model reliance"
-    elif weight >= 0.60: return "Developing â€” personal data growing, balanced with model"
-    elif weight >= 0.40: return "Learning â€” personal patterns emerging"
-    else:                return "New user â€” model-led predictions, keep logging daily"
+    if   weight >= 0.75: return "Personalised — strong personal data, minimal model reliance"
+    elif weight >= 0.60: return "Developing — personal data growing, balanced with model"
+    elif weight >= 0.40: return "Learning — personal patterns emerging"
+    else:                return "New user — model-led predictions, keep logging daily"
 
 
 @app.get("/user/{user_id}/learning-summary", response_model=LearningSummaryResponse,
@@ -2492,7 +2541,7 @@ def learning_summary(user_id: str) -> LearningSummaryResponse:
         return LearningSummaryResponse(
             user_id=user_id, total_food_logs=0, total_symptom_logs=0, total_log_entries=0,
             personalisation_weight=0.20, model_weight=0.80,
-            personalisation_stage="New user â€” model-led predictions, keep logging daily",
+            personalisation_stage="New user — model-led predictions, keep logging daily",
             learned_pairs=0, top_sensitivities=[],
             learning_message="No data yet. Start logging meals and symptoms.",
         )
@@ -2507,17 +2556,17 @@ def learning_summary(user_id: str) -> LearningSummaryResponse:
         top_sensitivities=[SensitivityItem(**p) for p in summary["top_sensitivities"]],
         learning_message=(
             f"Model is {_personalisation_stage(pw).lower()}. "
-            f"{summary['learned_pairs']} foodâ†’symptom pattern(s) identified. "
-            + ("Keep logging â€” predictions improve daily." if pw < 0.60
-               else "Strong personal profile â€” predictions are highly personalised.")
+            f"{summary['learned_pairs']} food→symptom pattern(s) identified. "
+            + ("Keep logging — predictions improve daily." if pw < 0.60
+               else "Strong personal profile — predictions are highly personalised.")
         ),
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 12 â€” GET /user/{user_id}/dashboard
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 12 — GET /user/{user_id}/dashboard
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SensitivitySummary(BaseModel):
     pair: str; probability: float; observations: int
@@ -2557,9 +2606,9 @@ def user_dashboard(user_id: str) -> DashboardResponse:
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 13 â€” GET /db/health
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 13 — GET /db/health
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/db/health", summary="MongoDB connection health and collection stats")
 def db_health():
@@ -2594,9 +2643,9 @@ def db_health():
         return {"status": "error", "error": str(exc)}
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT 14 â€” POST /predict/meal-symptom-forecast
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT 14 — POST /predict/meal-symptom-forecast
+# ─────────────────────────────────────────────────────────────────────────────
 
 from meal_symptom_forecast import ProposedFoodItem
 
@@ -2644,7 +2693,7 @@ def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
         raise HTTPException(503, "USDA dataset unavailable.")
     mongo = _state._mongo_db
     if mongo is None:
-        raise HTTPException(503, "MongoDB not connected â€” user history unavailable.")
+        raise HTTPException(503, "MongoDB not connected — user history unavailable.")
 
     try:
         food_logs    = mongo.get_food_logs(req.user_id, days=90, limit=400)
@@ -2704,9 +2753,9 @@ def meal_symptom_forecast(req: MealForecastRequest) -> MealForecastResponse:
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT (existing) â€” POST /scan/barcode
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT (existing) — POST /scan/barcode
+# ─────────────────────────────────────────────────────────────────────────────
 
 from scanner import fetch_product
 
@@ -2732,9 +2781,9 @@ def scan_barcode(req: BarcodeRequest):
                             quantity=product.get("quantity"))
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# ENDPOINT (existing) â€” POST /culprit-foods
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINT (existing) — POST /culprit-foods
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SimpleFoodLog(BaseModel):
     usda_id: int; quantity_g: float; logged_at: datetime
