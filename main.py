@@ -1695,7 +1695,7 @@ _TRIGGER_NOTE_SYSTEM = (
 
 class FoodTriggerCheckRequest(BaseModel):
     predictions: dict[str, list[str]] = Field(
-        ...,
+
         description="Symptom → list of food names (output from /recommend/risky_food)",
         example={
             "Heartburn": ["Fish"],
@@ -2179,17 +2179,17 @@ def _compute_food_note_severity(top_sym: str, x: int, pct: float) -> str:
     Rules (applied in order):
       1. Fatigue symptom        → always "Low"
       2. x < 3 occurrences     → "Early Signal - Log more to confirm"
-      3. pct < 30%             → "Low"
-      4. 30% <= pct < 60%      → "Medium"
-      5. pct >= 60%            → "High"
+      3. pct < 40%             → "Low"
+      4. 40% <= pct < 70%      → "Medium"
+      5. pct >= 70%            → "High"
     """
     if top_sym.lower() == "fatigue":
         return "Low"
     if x < 3:
         return "Early Signal - Log more to confirm"
-    if pct < 30.0:
+    if pct < 40.0:
         return "Low"
-    if pct < 60.0:
+    if pct < 70.0:
         return "Medium"
     return "High"
 
@@ -2315,108 +2315,116 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
 
     # ── CASE 2: food_logs present but NO symptom_logs ─────────────────────────
     if not req.symptom_logs:
-
-        # Build cache key: target_usda + frequency bucket + days bucket
-        # days_label is baked into the note so it must be part of the key
-        freq_bucket  = target_count // 5
-        days_bucket  = delta_days // 7   # bucket per week so nearby dates share cache
-        note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}|d={days_bucket}"
-        note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
-
-        if mongo_db is not None:
-            try:
-                cached_note = mongo_db.get_food_note(note_cache_key)
-                if cached_note:
-                    return FoodNoteResponse(
-                        target_food = target,
-                        case        = "no_symptoms",
-                        severity    = "Early Signal - Log more to confirm",
-                        note        = cached_note,
-                        cached      = True,
-                    )
-            except Exception as exc:
-                log.warning(f"food_note cache read failed: {exc}")
-
-        # Get food category tag (reuses food_tag_classifier)
-        category = "food"
-        if target_usda_id:
-            try:
-                from food_tag_classifier import classify_food_tags
-                tag_result = classify_food_tags(target_usda_id)
-                category   = tag_result.primary_tag
-            except Exception:
-                pass
-
-        # Get top likely symptom via _nutrient_risk at 100g
-        top_symptom = "digestive discomfort"
-        if target_usda_id and _state.usda_ready:
-            try:
-                from food_symptom_predictor import NutrientSnapshot, _nutrient_risk
-                usda_data = _state.usda_client.get_nutrients(target_usda_id)
-                if usda_data:
-                    def _sv(k):
-                        v = usda_data.get(k)
-                        return round(float(v), 3) if v is not None else None
-                    nutrients = NutrientSnapshot(
-                        description  = target_usda_desc or target,
-                        calories     = _sv("calories"),   protein  = _sv("protein"),
-                        total_fat    = _sv("total_fat"),  carbs    = _sv("carbs"),
-                        sodium       = _sv("sodium"),     sat_fat  = _sv("sat_fat"),
-                        cholesterol  = _sv("cholesterol"),sugar    = _sv("sugar"),
-                        portion_g    = 100.0,
-                    )
-                    symptom_list = [
-                        "Heartburn","Bloating","Gas","Nausea","Abdominal Pain",
-                        "Cramps","Diarrhea","Constipation","Fatigue","Acid Reflux",
-                    ]
-                    scored = [
-                        (sym, _nutrient_risk(nutrients, sym)[0])
-                        for sym in symptom_list
-                    ]
-                    scored.sort(key=lambda x: x[1], reverse=True)
-                    if scored[0][1] > 0.10:
-                        top_symptom = scored[0][0]
-            except Exception:
-                pass
-
-        # Claude Haiku — one sentence, 15-18 words
-        summary = (
-            f"Food: {target} (category: {category}). "
-            f"Eaten {target_count} times in {days_label}. "
-            f"Top likely gut symptom based on nutrients: {top_symptom}. "
-            f"No symptoms have been logged yet by this user."
-        )
-
-        note = (
-            f"You haven't logged any symptoms yet, but you eat {target} frequently — "
-            f"{target} may trigger {top_symptom}."
-        )
-
-        if _state.claude_client is not None:
-            try:
-                msg = _state.claude_client.messages.create(
-                    model      = "claude-haiku-4-5-20251001",
-                    max_tokens = 60,
-                    system     = _FOOD_NOTE_NO_SYMPTOMS_SYSTEM,
-                    messages   = [{"role": "user", "content": summary}],
-                )
-                note = msg.content[0].text.strip().strip('"')
-            except Exception as exc:
-                log.warning(f"food_note Claude call failed: {exc}")
-
-        if mongo_db is not None:
-            try:
-                mongo_db.set_food_note(note_cache_key, note)
-            except Exception as exc:
-                log.warning(f"food_note cache write failed: {exc}")
-
         return FoodNoteResponse(
             target_food = target,
-            case        = "no_symptoms",
+            case        = "no_logs",
             severity    = "Early Signal - Log more to confirm",
-            note        = note,
+            note        = f"Not enough symptom logs to analyse '{target}' yet.",
             cached      = False,
-        )
+        )    
+
+    # if not req.symptom_logs:
+
+    #     # Build cache key: target_usda + frequency bucket + days bucket
+    #     # days_label is baked into the note so it must be part of the key
+    #     freq_bucket  = target_count // 5
+    #     days_bucket  = delta_days // 7   # bucket per week so nearby dates share cache
+    #     note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}|d={days_bucket}"
+    #     note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
+
+    #     if mongo_db is not None:
+    #         try:
+    #             cached_note = mongo_db.get_food_note(note_cache_key)
+    #             if cached_note:
+    #                 return FoodNoteResponse(
+    #                     target_food = target,
+    #                     case        = "no_symptoms",
+    #                     severity    = "Early Signal - Log more to confirm",
+    #                     note        = cached_note,
+    #                     cached      = True,
+    #                 )
+    #         except Exception as exc:
+    #             log.warning(f"food_note cache read failed: {exc}")
+
+    #     # Get food category tag (reuses food_tag_classifier)
+    #     category = "food"
+    #     if target_usda_id:
+    #         try:
+    #             from food_tag_classifier import classify_food_tags
+    #             tag_result = classify_food_tags(target_usda_id)
+    #             category   = tag_result.primary_tag
+    #         except Exception:
+    #             pass
+
+    #     # Get top likely symptom via _nutrient_risk at 100g
+    #     top_symptom = "digestive discomfort"
+    #     if target_usda_id and _state.usda_ready:
+    #         try:
+    #             from food_symptom_predictor import NutrientSnapshot, _nutrient_risk
+    #             usda_data = _state.usda_client.get_nutrients(target_usda_id)
+    #             if usda_data:
+    #                 def _sv(k):
+    #                     v = usda_data.get(k)
+    #                     return round(float(v), 3) if v is not None else None
+    #                 nutrients = NutrientSnapshot(
+    #                     description  = target_usda_desc or target,
+    #                     calories     = _sv("calories"),   protein  = _sv("protein"),
+    #                     total_fat    = _sv("total_fat"),  carbs    = _sv("carbs"),
+    #                     sodium       = _sv("sodium"),     sat_fat  = _sv("sat_fat"),
+    #                     cholesterol  = _sv("cholesterol"),sugar    = _sv("sugar"),
+    #                     portion_g    = 100.0,
+    #                 )
+    #                 symptom_list = [
+    #                     "Heartburn","Bloating","Gas","Nausea","Abdominal Pain",
+    #                     "Cramps","Diarrhea","Constipation","Fatigue","Acid Reflux",
+    #                 ]
+    #                 scored = [
+    #                     (sym, _nutrient_risk(nutrients, sym)[0])
+    #                     for sym in symptom_list
+    #                 ]
+    #                 scored.sort(key=lambda x: x[1], reverse=True)
+    #                 if scored[0][1] > 0.10:
+    #                     top_symptom = scored[0][0]
+    #         except Exception:
+    #             pass
+
+    #     # # Claude Haiku — one sentence, 15-18 words
+    #     # summary = (
+    #     #     f"Food: {target} (category: {category}). "
+    #     #     f"Eaten {target_count} times in {days_label}. "
+    #     #     f"Top likely gut symptom based on nutrients: {top_symptom}. "
+    #     #     f"No symptoms have been logged yet by this user."
+    #     # )
+
+    #     note = (
+    #         f"You haven't logged any symptoms yet, log symptoms to see if they're related to {target}."
+    #     )
+
+    #     # if _state.claude_client is not None:
+    #     #     try:
+    #     #         msg = _state.claude_client.messages.create(
+    #     #             model      = "claude-haiku-4-5-20251001",
+    #     #             max_tokens = 60,
+    #     #             system     = _FOOD_NOTE_NO_SYMPTOMS_SYSTEM,
+    #     #             messages   = [{"role": "user", "content": summary}],
+    #     #         )
+    #     #         note = msg.content[0].text.strip().strip('"')
+    #     #     except Exception as exc:
+    #     #         log.warning(f"food_note Claude call failed: {exc}")
+
+    #     if mongo_db is not None:
+    #         try:
+    #             mongo_db.set_food_note(note_cache_key, note)
+    #         except Exception as exc:
+    #             log.warning(f"food_note cache write failed: {exc}")
+
+    #     return FoodNoteResponse(
+    #         target_food = target,
+    #         case        = "no_symptoms",
+    #         severity    = "Early Signal - Log more to confirm",
+    #         note        = note,
+    #         cached      = False,
+    #     )
 
     # ── CASE 1: food_logs + symptom_logs present ──────────────────────────────
 
