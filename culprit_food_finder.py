@@ -25,13 +25,18 @@ from food_symptom_predictor import batch_nli_score
 log = logging.getLogger(__name__)
 
 _DIGESTION_WINDOW: dict[str, tuple[int, int]] = {
-    "Heartburn": (15, 180), "Acid Reflux": (15, 180),
-    "Bloating": (30, 480), "Gas": (30, 480),
-    "Nausea": (30, 240), "Cramps": (30, 480),
-    "Abdominal Pain": (30, 480), "Diarrhea": (60, 960),
-    "Constipation": (720, 2880), "Fatigue": (60, 720),
+    "Heartburn":      (15,  180),   # 0.25–3 h
+    "Acid Reflux":    (15,  180),   # 0.25–3 h
+    "Bloating":       (30,  360),   # 0.5–6 h
+    "Gas":            (30,  360),   # 0.5–6 h
+    "Cramps":         (30,  360),   # 0.5–6 h
+    "Abdominal Pain": (30,  480),   # 0.5–8 h
+    "Nausea":         (30,  240),   # 0.5–4 h
+    "Diarrhea":       (60,  720),   # 1–12 h
+    "Constipation":   (720, 4320),  # 12–72 h
+    "Fatigue":        (60,  720),   # 1–12 h
 }
-_DEFAULT_WINDOW    = (30, 480)
+_DEFAULT_WINDOW    = (30, 360)
 _SEVERITY_WEIGHT   = {"Severe": 1.6, "Moderate": 1.0, "Mild": 0.6}
 _MIN_FOODS         = 3
 _MAX_FOODS         = 6

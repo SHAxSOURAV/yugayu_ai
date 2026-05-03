@@ -1958,15 +1958,20 @@ class SymptomCulpritResponse(BaseModel):
     message:          str
 
 
-# Digestion windows in MINUTES (from culprit_food_finder.py)
+# Digestion windows in MINUTES — per clinical reference (image)
 _CULPRIT_WINDOW: dict[str, tuple[int, int]] = {
-    "Heartburn": (15, 180), "Acid Reflux": (15, 180),
-    "Bloating":  (30, 480), "Gas":         (30, 480),
-    "Nausea":    (30, 240), "Cramps":      (30, 480),
-    "Abdominal Pain": (30, 480), "Diarrhea": (60, 960),
-    "Constipation":  (720, 2880), "Fatigue": (60, 720),
+    "Heartburn":      (15,  180),   # 0.25–3 h
+    "Acid Reflux":    (15,  180),   # 0.25–3 h
+    "Bloating":       (30,  360),   # 0.5–6 h
+    "Gas":            (30,  360),   # 0.5–6 h
+    "Cramps":         (30,  360),   # 0.5–6 h
+    "Abdominal Pain": (30,  480),   # 0.5–8 h
+    "Nausea":         (30,  240),   # 0.5–4 h
+    "Diarrhea":       (60,  720),   # 1–12 h
+    "Constipation":   (720, 4320),  # 12–72 h
+    "Fatigue":        (60,  720),   # 1–12 h
 }
-_CULPRIT_DEFAULT_WINDOW = (30, 480)
+_CULPRIT_DEFAULT_WINDOW = (30, 360)
 
 
 @app.post(
@@ -2125,10 +2130,10 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
 
 _FOOD_NOTE_NO_SYMPTOMS_SYSTEM = (
     "You are a concise gut-health coach. "
-    "Write exactly ONE sentence of 15-18 words warning a user about a food "
+    "Write exactly ONE sentence of 8-10 words warning a user about a food "
     "they eat frequently but have no symptom history for yet. "
     "Always mention the food name and its likely gut symptom by name. "
-    "Warm, specific, no markdown, no preamble. Return only the sentence."
+    "No markdown, no preamble. Return only the sentence."
 )
 
 
@@ -2157,6 +2162,7 @@ class FoodNoteRequest(BaseModel):
 class FoodNoteResponse(BaseModel):
     target_food: str
     case:        str    # "with_symptoms" | "no_symptoms" | "no_logs"
+    severity:    str    # "Low" | "Medium" | "High" | "Early Signal - Log more to confirm"
     note:        str
     cached:      bool
 
@@ -2164,6 +2170,28 @@ class FoodNoteResponse(BaseModel):
 def _food_name_key(name: str) -> str:
     """Normalised cache key for a food name string."""
     return hashlib.sha256(" ".join(name.lower().split()).encode()).hexdigest()
+
+
+def _compute_food_note_severity(top_sym: str, x: int, pct: float) -> str:
+    """
+    Compute severity label for /recommend/food_note case 1.
+
+    Rules (applied in order):
+      1. Fatigue symptom        → always "Low"
+      2. x < 3 occurrences     → "Early Signal - Log more to confirm"
+      3. pct < 30%             → "Low"
+      4. 30% <= pct < 60%      → "Medium"
+      5. pct >= 60%            → "High"
+    """
+    if top_sym.lower() == "fatigue":
+        return "Low"
+    if x < 3:
+        return "Early Signal - Log more to confirm"
+    if pct < 30.0:
+        return "Low"
+    if pct < 60.0:
+        return "Medium"
+    return "High"
 
 
 def _resolve_food_name_to_usda(
@@ -2242,6 +2270,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         return FoodNoteResponse(
             target_food = "chicken",
             case        = "with_symptoms",
+            severity    = "Low",
             note        = "Maybe 'chicken' triggered Heartburn about 2 times in the last 30 days.",
             cached      = False,
         )
@@ -2255,10 +2284,8 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         return FoodNoteResponse(
             target_food = target,
             case        = "no_logs",
-            note        = (
-                f"You don't have enough food logs to analyse '{target}' yet. "
-                f"Start logging meals to get personalised gut-health insights."
-            ),
+            severity    = "Early Signal - Log more to confirm",
+            note        = f"Not enough logs to analyse '{target}' yet.",
             cached      = False,
         )
 
@@ -2301,10 +2328,11 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
                 cached_note = mongo_db.get_food_note(note_cache_key)
                 if cached_note:
                     return FoodNoteResponse(
-                        target_food      = target,
-                        case             = "no_symptoms",
-                        note             = cached_note,
-                        cached           = True,
+                        target_food = target,
+                        case        = "no_symptoms",
+                        severity    = "Early Signal - Log more to confirm",
+                        note        = cached_note,
+                        cached      = True,
                     )
             except Exception as exc:
                 log.warning(f"food_note cache read failed: {exc}")
@@ -2383,23 +2411,26 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
                 log.warning(f"food_note cache write failed: {exc}")
 
         return FoodNoteResponse(
-            target_food      = target,
-            case             = "no_symptoms",
-            note             = note,
-            cached           = False,
+            target_food = target,
+            case        = "no_symptoms",
+            severity    = "Early Signal - Log more to confirm",
+            note        = note,
+            cached      = False,
         )
 
     # ── CASE 1: food_logs + symptom_logs present ──────────────────────────────
 
     # Temporal window: which symptom events had target_food eaten before them?
-    from culprit_food_finder import _parse_iso, _DIGESTION_WINDOW, _DEFAULT_WINDOW
+    # Track per-symptom: trigger count AND the actual delta minutes for avg time.
+    from culprit_food_finder import _DIGESTION_WINDOW, _DEFAULT_WINDOW
 
-    trigger_count:  int               = 0
+    trigger_count:    int              = 0
     matched_symptoms: dict[str, int]  = {}
+    delta_minutes_list: list[float]   = []   # collect deltas to compute avg time
 
     for sl in req.symptom_logs:
-        symptom    = sl.symptom.strip()
-        sym_time   = sl.logged_at
+        symptom  = sl.symptom.strip()
+        sym_time = sl.logged_at
         if sym_time.tzinfo is None:
             sym_time = sym_time.replace(tzinfo=timezone.utc)
         win_min, win_max = _DIGESTION_WINDOW.get(symptom, _DEFAULT_WINDOW)
@@ -2414,6 +2445,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             if win_min <= delta_min <= win_max:
                 trigger_count += 1
                 matched_symptoms[symptom] = matched_symptoms.get(symptom, 0) + 1
+                delta_minutes_list.append(delta_min)
                 break  # count once per symptom event
 
     # Top triggered symptom
@@ -2422,21 +2454,25 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         if matched_symptoms else req.symptom_logs[0].symptom
     )
 
-    # Get food category
-    category = "food"
-    if target_usda_id:
-        try:
-            from food_tag_classifier import classify_food_tags
-            tag_result = classify_food_tags(target_usda_id)
-            category   = tag_result.primary_tag
-        except Exception:
-            pass
+    # X = trigger_count, Y = target_count (total times target food appears in logs)
+    x = trigger_count
+    y = target_count
+    pct = round((x / y * 100) if y > 0 else 0.0, 1)
 
-    # Build cache key — include days_bucket so different date ranges
-    # never share a cached note (days_label is baked into the note text)
+    # Average time from eating target food to symptom
+    if delta_minutes_list:
+        avg_min = sum(delta_minutes_list) / len(delta_minutes_list)
+        if avg_min >= 60:
+            avg_time_str = f"{round(avg_min / 60, 1)} hour{'s' if round(avg_min/60,1) != 1.0 else ''}"
+        else:
+            avg_time_str = f"{round(avg_min)} minutes"
+    else:
+        avg_time_str = None
+
+    # Build cache key
     days_bucket   = delta_days // 7
     sym_sig       = "|".join(sorted(matched_symptoms.keys()))
-    note_key_raw  = f"with_symptoms|{target_usda_id or target_low}|{sym_sig}|{trigger_count}|d={days_bucket}"
+    note_key_raw  = f"with_symptoms|{target_usda_id or target_low}|{sym_sig}|{x}|{y}|d={days_bucket}"
     note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
 
     if mongo_db is not None:
@@ -2444,25 +2480,25 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             cached_note = mongo_db.get_food_note(note_cache_key)
             if cached_note:
                 return FoodNoteResponse(
-                    target_food      = target,
-                    case             = "with_symptoms",
-                    note             = cached_note,
-                    cached           = True,
+                    target_food = target,
+                    case        = "with_symptoms",
+                    severity    = _compute_food_note_severity(top_sym, x, pct),
+                    note        = cached_note,
+                    cached      = True,
                 )
         except Exception as exc:
             log.warning(f"food_note cache read failed (case1): {exc}")
 
     # Build deterministic note — zero Claude
-    if trigger_count == 0:
+    if x == 0:
         note = (
-            f"'{target}' did not appear within the digestion window before any of your "
-            f"{len(req.symptom_logs)} logged symptom event"
-            f"{'s' if len(req.symptom_logs) != 1 else ''} in the last {days_label}."
+            f"'{target}' was not linked to any symptoms in {days_label}."
         )
     else:
+        time_part = f", within {avg_time_str}" if avg_time_str else ""
         note = (
-            f"Maybe '{target}' triggered {top_sym} about {trigger_count} "
-            f"time{'s' if trigger_count != 1 else ''} in the last {days_label}."
+            f"'{target}' was associated with {top_sym} {x} out of {y} times "
+            f"({pct}%){time_part} in the last {days_label}."
         )
 
     if mongo_db is not None:
@@ -2472,10 +2508,11 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             log.warning(f"food_note cache write failed (case1): {exc}")
 
     return FoodNoteResponse(
-        target_food      = target,
-        case             = "with_symptoms",
-        note             = note,
-        cached           = False,
+        target_food = target,
+        case        = "with_symptoms",
+        severity    = _compute_food_note_severity(top_sym, x, pct),
+        note        = note,
+        cached      = False,
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
