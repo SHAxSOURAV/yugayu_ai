@@ -594,23 +594,33 @@ Return ONLY valid JSON, no markdown:
 def score_symptom_log_claude(
     symptoms: list[str],
     severity: str,
-) -> int:
+    note: Optional[str] = None,
+) -> tuple[int, str]:
     """
     Call Claude to score a symptom log entry.
 
     Returns
     -------
-    penalty : int in [0, 40] - subtracted from current score
+    (penalty, note_text)
+        penalty   : int in [0, 40] — subtracted from current score
+        note_text : str — short clinical summary of what was scored
     """
+    def _fallback_note(syms, sev):
+        top = syms[0] if syms else "symptom"
+        return f"{sev} {top.lower()} logged; penalty applied to gut score."
+
     if _claude_client is None:
         base = {"Mild": 4, "Moderate": 8, "Severe": 13}.get(severity, 6)
-        return min(40, base * max(1, len(symptoms)))
+        penalty = min(40, base * max(1, len(symptoms)))
+        return penalty, _fallback_note(symptoms, severity)
 
     symptom_str = ", ".join(symptoms) if symptoms else "unspecified"
+    note_part   = f"\nUser note: {note.strip()}" if note and note.strip() else ""
     user_msg = (
         f"Symptoms reported: {symptom_str}\n"
         f"Severity: {severity}\n"
-        f"Number of symptoms: {len(symptoms)}\n"
+        f"Number of symptoms: {len(symptoms)}"
+        f"{note_part}\n"
         f"Return the JSON penalty only."
     )
 
@@ -626,9 +636,14 @@ def score_symptom_log_claude(
             raw = raw.split("```")[1].lstrip("json").strip()
         data    = json.loads(raw)
         penalty = int(data.get("penalty", 5))
-        return max(0, min(40, penalty))
+        penalty = max(0, min(40, penalty))
+
+        top = symptoms[0] if symptoms else "symptom"
+        note_text = f"{severity} {top.lower()} reported; gut score reduced by {penalty} points."
+        return penalty, note_text
 
     except Exception as exc:
         log.warning(f"score_symptom_log_claude failed: {exc}")
         base = {"Mild": 4, "Moderate": 8, "Severe": 13}.get(severity, 6)
-        return min(40, base * max(1, len(symptoms)))
+        penalty = min(40, base * max(1, len(symptoms)))
+        return penalty, _fallback_note(symptoms, severity)
