@@ -314,7 +314,6 @@ def _mk_mock_log_food(req):
             {"normalised_name": "Rice",    "usda_id": 169704, "weight_g": 200.0},
         ],
         "meal_type": req.meal_type,
-        "note": "[MOCK] Balanced meal with moderate gut impact.",
     }
 
 
@@ -324,7 +323,6 @@ def _mk_mock_log_symptom(req):
         "updated_score":     max(0, min(100, req.current_score - 8)),
         "detected_symptoms": deduped,
         "logged_at":         utc_now_iso(),
-        "note":              "[MOCK] Symptoms logged; moderate penalty applied.",
     }
 
 
@@ -341,7 +339,6 @@ def _mk_mock_food_parse(req):
         "score_impact": 3  if req.current_score is not None else None,
         "updated_score": max(40, min(99, (req.current_score or 70) + 3))
                          if req.current_score is not None else None,
-        "note": "[MOCK] Sample food parse result.",
     }
 
 
@@ -632,7 +629,6 @@ class FoodLogResponse(BaseModel):
     normalised_names:     List[str]
     results:              List[FoodLogItem]
     meal_type:            str
-    note:                 str
     users_given_food_name: Optional[str] = None
 
 
@@ -682,7 +678,6 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
 
     # ── Step 2: score the meal via Claude ────────────────────────────────────
     raw_score = 0
-    note      = "Meal logged successfully."
     if _state.nutrition_ready:
         try:
             import nutrition_scorer as _ns
@@ -690,7 +685,7 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
                 {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
                 for r in raw
             ]
-            raw_score, note = _ns.score_meal_claude(
+            raw_score, _ = _ns.score_meal_claude(
                 foods=foods_for_scoring,
                 meal_type=req.meal_type,
             )
@@ -736,7 +731,6 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
             for r in raw
         ],
         meal_type             = req.meal_type,
-        note                  = note,
         users_given_food_name = users_given_food_name,
     )
 # ENDPOINT 4 — POST /log/symptom
@@ -765,7 +759,6 @@ class SymptomLogResponse(BaseModel):
     updated_score:      int        = Field(..., description="Score after penalty applied (0–100).")
     detected_symptoms:  List[str]  = Field(..., description="Validated, deduplicated symptom list.")
     logged_at:          str        = Field(..., description="UTC ISO-8601 timestamp used for this entry.")
-    note:               str        = Field(..., description="7–10 word clinical summary of what was reported.")
 
 
 @app.post("/log/symptom", response_model=SymptomLogResponse,
@@ -828,7 +821,7 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
 
     try:
         from nutrition_scorer import score_symptom_log_claude
-        penalty, note_text = score_symptom_log_claude(
+        penalty, _ = score_symptom_log_claude(
             symptoms  = deduped,
             severity  = req.severity,
             note      = req.note,
@@ -843,7 +836,6 @@ def log_symptom(req: SymptomLogRequest) -> SymptomLogResponse:
         updated_score     = updated_score,
         detected_symptoms = deduped,
         logged_at         = logged_at_str,
-        note              = note_text,
     )
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 1 — POST /food/parse
@@ -870,7 +862,6 @@ class FoodParseResponse(BaseModel):
     meal_type:             Optional[str] = None
     score_impact:          Optional[int] = None
     updated_score:         Optional[int] = None
-    note:                  Optional[str] = None
     users_given_food_name: Optional[str] = None
 
 
@@ -906,7 +897,6 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
 
     score_impact:  Optional[int] = None
     updated_score: Optional[int] = None
-    note:          Optional[str] = None
 
     if req.current_score is not None and _state.nutrition_ready:
         try:
@@ -915,7 +905,7 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
                 {"usda_description": r["usda_description"], "weight_g": r["weight_g"]}
                 for r in raw
             ]
-            raw_score, note = _ns.score_meal_claude(
+            raw_score, _ = _ns.score_meal_claude(
                 foods=foods_for_scoring,
                 meal_type=meal_type or "Lunch",
             )
@@ -958,7 +948,6 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
         meal_type             = meal_type,
         score_impact          = score_impact,
         updated_score         = updated_score,
-        note                  = note,
         users_given_food_name = users_given_food_name,
     )
 
