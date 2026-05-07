@@ -19,7 +19,8 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from bisect import bisect_left, bisect_right
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -2186,35 +2187,60 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
             message          = "No food logs provided. Cannot identify culprit foods.",
         )
 
+    # ── Request-level cache (fast replay) ─────────────────────────────────
+    culprit_cache_key = _request_cache_key(
+        "recommend_symptom_culprit",
+        req.food_logs,
+        req.symptom_logs,
+    )
+    cached_payload = _endpoint_cache_get(culprit_cache_key)
+    if cached_payload is not None:
+        return SymptomCulpritResponse(**cached_payload)
+
     mongo_db = getattr(_state, "_mongo_db", None)
-    expanded_logs: list[dict] = []
-    for fl in req.food_logs:
-        expanded_logs.extend(_expand_food_name_log(fl, mongo_db))
+    expanded_logs: list[dict] = _expand_food_name_logs_batch(req.food_logs, mongo_db)
 
     # ── Step 1: collect candidates across all symptom windows ─────────────────
+    foods_sorted: list[tuple[datetime, dict]] = []
+    for fl in expanded_logs:
+        ft = fl.get("logged_at")
+        if ft is None:
+            continue
+        if ft.tzinfo is None:
+            ft = ft.replace(tzinfo=timezone.utc)
+        foods_sorted.append((ft, fl))
+    foods_sorted.sort(key=lambda x: x[0])
+    food_times = [t for t, _ in foods_sorted]
+
     candidates: list[dict] = []
     for sl in req.symptom_logs:
         symptom = sl.symptom.strip()
         sym_time = sl.logged_at
         if sym_time.tzinfo is None:
             sym_time = sym_time.replace(tzinfo=timezone.utc)
-        win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)
+        win_min, win_max = _CULPRIT_WINDOW.get(symptom, _CULPRIT_DEFAULT_WINDOW)  # minutes
 
-        for fl in expanded_logs:
-            food_time = fl["logged_at"]
-            if food_time.tzinfo is None:
-                food_time = food_time.replace(tzinfo=timezone.utc)
+        # food_time satisfies: win_min <= (sym_time - food_time) <= win_max
+        t_start = sym_time - timedelta(minutes=win_max)
+        t_end = sym_time - timedelta(minutes=win_min)
+
+        l = bisect_left(food_times, t_start)
+        r = bisect_right(food_times, t_end)
+
+        intensity = _normalise_intensity(sl.intensity)
+        for i in range(l, r):
+            food_time, fl = foods_sorted[i]
             delta_minutes = (sym_time - food_time).total_seconds() / 60.0
             if win_min <= delta_minutes <= win_max:
                 candidates.append({
                     "symptom": symptom,
-                    "intensity": _normalise_intensity(sl.intensity),
+                    "intensity": intensity,
                     "window_min": win_min,
                     "window_max": win_max,
                     "usda_id": fl.get("usda_id", 0),
                     "food_name": fl.get("display_name") or fl.get("food_name", "Unknown food"),
                     "weight_g": fl.get("weight_g", 0),
-                    "logged_at": fl.get("logged_at"),
+                    "logged_at": food_time,
                     "hours_before": round(delta_minutes / 60.0, 2),
                 })
 
@@ -2245,10 +2271,12 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
         raise HTTPException(503, f"USDA client unavailable: {_state.usda_error or 'unknown'}")
 
     name_cache: dict[int, str] = {}
-    for c in candidates:
-        uid = c["usda_id"]
-        if uid not in name_cache:
-            name_cache[uid] = _state.usda_client.get_description(uid) if uid else c["food_name"]
+    nutrient_cache: dict[int, Optional[dict]] = {}
+    unique_uids = {c.get("usda_id", 0) for c in candidates}
+    for uid in unique_uids:
+        if uid and uid > 0:
+            name_cache[uid] = _state.usda_client.get_description(uid)
+            nutrient_cache[uid] = _state.usda_client.get_nutrients(uid)
 
     # ── Step 3: nutrient-risk + keyword-risk per candidate ────────────────────
     from food_symptom_predictor import (
@@ -2258,13 +2286,13 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
     scored_raw: list[dict] = []
     for c in candidates:
         uid       = c["usda_id"]
-        food_name = c["food_name"] or name_cache.get(uid, "Unknown food")
+        food_name = name_cache.get(uid, c["food_name"]) or "Unknown food"
         weight_g  = c["weight_g"]
         symptom   = c["symptom"]
         sev_mult  = {"Mild": 0.9, "Moderate": 1.0, "Severe": 1.15}.get(c["intensity"], 1.0)
 
         # Fetch USDA nutrients (3-tier cache: in-process → MongoDB → API)
-        usda_data = _state.usda_client.get_nutrients(uid) if uid > 0 else None
+        usda_data = nutrient_cache.get(uid) if uid and uid > 0 else None
         if usda_data:
             scale = weight_g / 100.0
             def sv(k):
@@ -2348,15 +2376,17 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
     associated = _natural_join(list(dict.fromkeys(d.food_name for d in scored)))
     message = f"{associated} is associated with {symptom.lower()}."
 
-    return SymptomCulpritResponse(
-        symptom          = symptom_label,
-        intensity        = intensity_label,
-        culprit_foods    = culprit_ids,
-        culprit_details  = scored,
-        foods_in_window  = foods_in_window,
-        foods_scanned    = foods_scanned,
-        message          = message,
-    )
+    response_payload = {
+        "symptom": symptom_label,
+        "intensity": intensity_label,
+        "culprit_foods": culprit_ids,
+        "culprit_details": scored,
+        "foods_in_window": foods_in_window,
+        "foods_scanned": foods_scanned,
+        "message": message,
+    }
+    _endpoint_cache_set(culprit_cache_key, response_payload)
+    return SymptomCulpritResponse(**response_payload)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT — POST /recommend/food_note
@@ -2523,22 +2553,59 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             cached      = False,
         )
 
+    # ── Request-level cache (fast replay) ─────────────────────────────────
+    endpoint_cache_key = _generic_cache_key(
+        "recommend_food_note",
+        {
+            "target": _light_normalise_text(target),
+            "food_logs": [
+                {
+                    "food_name": _light_normalise_text(fl.food_name),
+                    "weight_g": round(float(fl.weight_g), 2),
+                    "logged_at": fl.logged_at.isoformat(),
+                }
+                for fl in req.food_logs
+            ],
+            "symptom_logs": [
+                {
+                    "symptom": sl.symptom.strip(),
+                    "intensity": _normalise_intensity(sl.intensity),
+                    "logged_at": sl.logged_at.isoformat(),
+                }
+                for sl in req.symptom_logs
+            ],
+        },
+    )
+    cached_payload = _endpoint_cache_get(endpoint_cache_key)
+    if cached_payload is not None:
+        return FoodNoteResponse(**cached_payload)
+
+    # Fast early return: no symptom logs => we don't need USDA resolution.
+    if not req.symptom_logs:
+        payload = {
+            "target_food": target,
+            "case": "no_logs",
+            "severity": "Early Signal - Log more to confirm",
+            "note": f"Not enough symptom logs to analyse '{target}' yet.",
+            "cached": False,
+        }
+        _endpoint_cache_set(endpoint_cache_key, payload)
+        return FoodNoteResponse(**payload)
+
     # ── Resolve target_food → USDA (database first, then USDA API) ───────────
     target_usda_id, target_usda_desc = _resolve_food_name_to_usda(target, mongo_db)
 
-    # ── Resolve ALL food_logs food_names → USDA (batch, database first) ──────
-    # Build a name→(usda_id, usda_desc) cache for every unique food in the logs
-    name_usda: dict[str, tuple[Optional[int], Optional[str]]] = {}
+    # ── Pre-filter only food logs matching the target substring (fast) ──────
+    target_food_times: list[datetime] = []
+    target_count: int = 0
     for fl in req.food_logs:
-        fn = fl.food_name.strip()
-        if fn not in name_usda:
-            name_usda[fn] = _resolve_food_name_to_usda(fn, mongo_db)
-
-    # ── Count how often target_food appears in food_logs (partial match) ──────
-    target_count = sum(
-        1 for fl in req.food_logs
-        if target_low in fl.food_name.lower() or fl.food_name.lower() in target_low
-    )
+        fn_low = fl.food_name.lower()
+        if target_low in fn_low or fn_low in target_low:
+            target_count += 1
+            ft = fl.logged_at
+            if ft.tzinfo is None:
+                ft = ft.replace(tzinfo=timezone.utc)
+            target_food_times.append(ft)
 
     # ── Date range from first to last food log entry ──────────────────────────
     timestamps  = sorted(fl.logged_at for fl in req.food_logs)
@@ -2547,17 +2614,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     delta_days  = max(1, (date_end - date_start).days)
     days_label  = f"{delta_days} day{'s' if delta_days != 1 else ''}"
 
-    # ── CASE 2: food_logs present but NO symptom_logs ─────────────────────────
-    if not req.symptom_logs:
-        return FoodNoteResponse(
-            target_food = target,
-            case        = "no_logs",
-            severity    = "Early Signal - Log more to confirm",
-            note        = f"Not enough symptom logs to analyse '{target}' yet.",
-            cached      = False,
-        )    
-
-    # if not req.symptom_logs:
+    # (symptom_logs missing handled by fast early return above)
 
     #     # Build cache key: target_usda + frequency bucket + days bucket
     #     # days_label is baked into the note so it must be part of the key
@@ -2677,12 +2734,7 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
             sym_time = sym_time.replace(tzinfo=timezone.utc)
         win_min, win_max = _DIGESTION_WINDOW.get(symptom, _DEFAULT_WINDOW)
 
-        for fl in req.food_logs:
-            if not (target_low in fl.food_name.lower() or fl.food_name.lower() in target_low):
-                continue
-            food_time = fl.logged_at
-            if food_time.tzinfo is None:
-                food_time = food_time.replace(tzinfo=timezone.utc)
+        for food_time in target_food_times:
             delta_min = (sym_time - food_time).total_seconds() / 60.0
             if win_min <= delta_min <= win_max:
                 trigger_count += 1
@@ -2721,13 +2773,15 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         try:
             cached_note = mongo_db.get_food_note(note_cache_key)
             if cached_note:
-                return FoodNoteResponse(
-                    target_food = target,
-                    case        = "with_symptoms",
-                    severity    = _compute_food_note_severity(top_sym, x, pct),
-                    note        = cached_note,
-                    cached      = True,
-                )
+                payload = {
+                    "target_food": target,
+                    "case": "with_symptoms",
+                    "severity": _compute_food_note_severity(top_sym, x, pct),
+                    "note": cached_note,
+                    "cached": True,
+                }
+                _endpoint_cache_set(endpoint_cache_key, payload)
+                return FoodNoteResponse(**payload)
         except Exception as exc:
             log.warning(f"food_note cache read failed (case1): {exc}")
 
@@ -2749,13 +2803,15 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         except Exception as exc:
             log.warning(f"food_note cache write failed (case1): {exc}")
 
-    return FoodNoteResponse(
-        target_food = target,
-        case        = "with_symptoms",
-        severity    = _compute_food_note_severity(top_sym, x, pct),
-        note        = note,
-        cached      = False,
-    )
+    payload = {
+        "target_food": target,
+        "case": "with_symptoms",
+        "severity": _compute_food_note_severity(top_sym, x, pct),
+        "note": note,
+        "cached": False,
+    }
+    _endpoint_cache_set(endpoint_cache_key, payload)
+    return FoodNoteResponse(**payload)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT 9 — POST /predict/feedback
