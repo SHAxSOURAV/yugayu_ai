@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -1282,12 +1283,70 @@ def _natural_join(items: list[str]) -> str:
     return f"{', '.join(parts[:-1])}, and {parts[-1]}"
 
 
+_FAST_ENDPOINT_CACHE_TTL_SEC = 300
+_FAST_ENDPOINT_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _endpoint_cache_get(key: str) -> Optional[dict]:
+    hit = _FAST_ENDPOINT_CACHE.get(key)
+    if not hit:
+        return None
+    expires_at, payload = hit
+    if time.time() > expires_at:
+        _FAST_ENDPOINT_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _endpoint_cache_set(key: str, payload: dict) -> None:
+    _FAST_ENDPOINT_CACHE[key] = (time.time() + _FAST_ENDPOINT_CACHE_TTL_SEC, payload)
+
+
+def _request_cache_key(
+    endpoint: str,
+    food_logs: list,
+    symptom_logs: list,
+    n: Optional[int] = None,
+) -> str:
+    compact = {
+        "endpoint": endpoint,
+        "n": n,
+        "food_logs": [
+            {
+                "food_name": _light_normalise_text(getattr(f, "food_name", "")),
+                "weight_g": round(float(getattr(f, "weight_g", 0)), 2),
+                "logged_at": getattr(f, "logged_at").isoformat(),
+            }
+            for f in food_logs
+        ],
+        "symptom_logs": [
+            {
+                "symptom": getattr(s, "symptom", ""),
+                "intensity": _normalise_intensity(getattr(s, "intensity", "")),
+                "logged_at": getattr(s, "logged_at").isoformat(),
+            }
+            for s in symptom_logs
+        ],
+    }
+    blob = json.dumps(compact, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _looks_like_sentence_meal_text(name: str) -> bool:
+    txt = _light_normalise_text(name)
+    words = txt.split()
+    if len(words) < 5:
+        return False
+    markers = {"had", "eat", "with", "and", "for", "breakfast", "lunch", "dinner", "snack"}
+    return any(m in words for m in markers)
+
+
 def _expand_food_name_log(fl: FoodNameLogInput, mongo_db) -> list[dict]:
     """
     Accept either plain food names or sentence-style meal text.
     Expands sentence input via existing parser and resolves each food to USDA ids.
     """
-    if _state.usda_ready and _state.text_to_usda is not None and len(fl.food_name.split()) >= 4:
+    if _state.usda_ready and _state.text_to_usda is not None and _looks_like_sentence_meal_text(fl.food_name):
         try:
             parsed = _state.text_to_usda(fl.food_name)
             if parsed:
@@ -1315,6 +1374,55 @@ def _expand_food_name_log(fl: FoodNameLogInput, mongo_db) -> list[dict]:
         "logged_at": fl.logged_at,
         "display_name": clean,
     }]
+
+
+def _expand_food_name_logs_batch(food_logs: list[FoodNameLogInput], mongo_db) -> list[dict]:
+    """
+    Fast path:
+    - Resolve unique simple food names once (in parallel).
+    - Parse sentence-style logs only when needed.
+    """
+    if not food_logs:
+        return []
+
+    simple_keys: dict[str, str] = {}
+    sentence_logs: list[FoodNameLogInput] = []
+    for fl in food_logs:
+        raw = " ".join(fl.food_name.split())
+        if _looks_like_sentence_meal_text(raw):
+            sentence_logs.append(fl)
+        else:
+            key = _light_normalise_text(raw)
+            if key and key not in simple_keys:
+                simple_keys[key] = raw
+
+    resolved_simple: dict[str, tuple[int, str]] = {}
+    if simple_keys:
+        def _resolve_one(item: tuple[str, str]) -> tuple[str, tuple[int, str]]:
+            key, raw = item
+            usda_id, _ = _resolve_food_name_to_usda(raw, mongo_db)
+            clean = _clean_food_label(raw)
+            return key, (usda_id or 0, clean)
+
+        with ThreadPoolExecutor(max_workers=min(8, max(2, len(simple_keys)))) as ex:
+            for key, value in ex.map(_resolve_one, simple_keys.items()):
+                resolved_simple[key] = value
+
+    expanded: list[dict] = []
+    for fl in food_logs:
+        key = _light_normalise_text(fl.food_name)
+        if _looks_like_sentence_meal_text(fl.food_name):
+            expanded.extend(_expand_food_name_log(fl, mongo_db))
+            continue
+        usda_id, clean = resolved_simple.get(key, (0, _clean_food_label(fl.food_name)))
+        expanded.append({
+            "food_name": clean,
+            "usda_id": usda_id,
+            "weight_g": fl.weight_g,
+            "logged_at": fl.logged_at,
+            "display_name": clean,
+        })
+    return expanded
  
  
 # ── Shared helper: normalise intensity case ───────────────────────────────────
@@ -1393,10 +1501,13 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
                 f"Accepted: Mild, Moderate, Severe (case-insensitive).",
             )
  
+    cache_key = _request_cache_key("recommend_safe_food", req.food_logs, req.symptom_logs, req.n)
+    cached_payload = _endpoint_cache_get(cache_key)
+    if cached_payload is not None:
+        return SafeFoodResponse(**cached_payload)
+
     mongo_db = getattr(_state, "_mongo_db", None)
-    food_logs_named: list[dict] = []
-    for fl in req.food_logs:
-        food_logs_named.extend(_expand_food_name_log(fl, mongo_db))
+    food_logs_named = _expand_food_name_logs_batch(req.food_logs, mongo_db)
  
     symptom_logs_plain = [
         {
@@ -1441,13 +1552,15 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
         + (f" {composite_cnt} composite meal(s) detected and grouped." if composite_cnt else "")
     )
  
-    return SafeFoodResponse(
-        safe_foods               = safe_foods,
-        foods_analysed           = len(req.food_logs),
-        composite_meals_detected = composite_cnt,
-        symptoms_considered      = len(req.symptom_logs),
-        source_note              = source_note,
-    )
+    response_payload = {
+        "safe_foods": safe_foods,
+        "foods_analysed": len(req.food_logs),
+        "composite_meals_detected": composite_cnt,
+        "symptoms_considered": len(req.symptom_logs),
+        "source_note": source_note,
+    }
+    _endpoint_cache_set(cache_key, response_payload)
+    return SafeFoodResponse(**response_payload)
  
 # ══════════════════════════════════════════════════════════════════════════════
  
@@ -1503,11 +1616,14 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
                 f"Accepted values: Mild, Moderate, Severe (case-insensitive).",
             )
  
+    cache_key = _request_cache_key("recommend_risky_food", req.food_logs, req.symptom_logs)
+    cached_payload = _endpoint_cache_get(cache_key)
+    if cached_payload is not None:
+        return FoodSymptomPredictResponse(**cached_payload)
+
     # ── Resolve food_name inputs (supports sentence-style meal text) ─────────
     mongo_db = getattr(_state, "_mongo_db", None)
-    food_logs_named: list[dict] = []
-    for fl in req.food_logs:
-        food_logs_named.extend(_expand_food_name_log(fl, mongo_db))
+    food_logs_named = _expand_food_name_logs_batch(req.food_logs, mongo_db)
  
     symptom_logs_plain = [
         {
@@ -1532,13 +1648,15 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
         log.exception("predict/food-symptom — temporal analysis failed")
         raise HTTPException(500, f"Prediction error: {exc}")
 
-    return FoodSymptomPredictResponse(
-        predictions              = predictions,
-        food_logs_processed      = len(req.food_logs),
-        symptom_logs_processed   = len(req.symptom_logs),
-        composite_meals_detected = composite_count,
-        evaluated_at             = datetime.now(timezone.utc).isoformat(),
-    )
+    response_payload = {
+        "predictions": predictions,
+        "food_logs_processed": len(req.food_logs),
+        "symptom_logs_processed": len(req.symptom_logs),
+        "composite_meals_detected": composite_count,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _endpoint_cache_set(cache_key, response_payload)
+    return FoodSymptomPredictResponse(**response_payload)
  
 
 # ─────────────────────────────────────────────────────────────────────────────
