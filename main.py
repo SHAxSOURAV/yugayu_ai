@@ -2554,27 +2554,33 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         )
 
     # ── Request-level cache (fast replay) ─────────────────────────────────
-    endpoint_cache_key = _generic_cache_key(
-        "recommend_food_note",
-        {
-            "target": _light_normalise_text(target),
-            "food_logs": [
-                {
-                    "food_name": _light_normalise_text(fl.food_name),
-                    "weight_g": round(float(fl.weight_g), 2),
-                    "logged_at": fl.logged_at.isoformat(),
-                }
-                for fl in req.food_logs
-            ],
-            "symptom_logs": [
-                {
-                    "symptom": sl.symptom.strip(),
-                    "intensity": _normalise_intensity(sl.intensity),
-                    "logged_at": sl.logged_at.isoformat(),
-                }
-                for sl in req.symptom_logs
-            ],
-        },
+    # endpoint_cache_key = _request_cache_key(
+    #     "recommend_food_note|",
+    #     {
+    #         "target": _light_normalise_text(target),
+    #         "food_logs": [
+    #             {
+    #                 "food_name": _light_normalise_text(fl.food_name),
+    #                 "weight_g": round(float(fl.weight_g), 2),
+    #                 "logged_at": fl.logged_at.isoformat(),
+    #             }
+    #             for fl in req.food_logs
+    #         ],
+    #         "symptom_logs": [
+    #             {
+    #                 "symptom": sl.symptom.strip(),
+    #                 "intensity": _normalise_intensity(sl.intensity),
+    #                 "logged_at": sl.logged_at.isoformat(),
+    #             }
+    #             for sl in req.symptom_logs
+    #         ],
+    #     },
+    # )
+
+    endpoint_cache_key = _request_cache_key(
+        "recommend_food_note|" + _light_normalise_text(target),
+        req.food_logs,
+        req.symptom_logs,
     )
     cached_payload = _endpoint_cache_get(endpoint_cache_key)
     if cached_payload is not None:
