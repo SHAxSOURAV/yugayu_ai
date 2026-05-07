@@ -491,12 +491,182 @@ def _meal_score_cache_key(foods: list[dict], meal_type: str) -> str:
     Rounds weight_g to nearest 10g so 158g and 162g share the same cache slot.
     """
     parts = sorted(
-        f"{f.get('usda_description', '')}:{round(f.get('weight_g', 0) / 10) * 10}g"
+        f"{f.get('usda_id') or f.get('usda_description', '')}:{round(f.get('weight_g', 0) / 10) * 10}g"
         for f in foods
         if f.get("weight_g", 0) > 0
     )
     payload = meal_type.lower() + "|" + "|".join(parts)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_meal_totals(foods: list[dict]) -> dict[str, float]:
+    totals = {
+        "portion_g": 0.0,
+        "protein": 0.0,
+        "fiber": 0.0,
+        "sodium": 0.0,
+        "sat_fat": 0.0,
+        "sugar": 0.0,
+        "total_fat": 0.0,
+        "calories": 0.0,
+    }
+    if _usda_client is None:
+        return totals
+
+    for food in foods:
+        weight_g = max(0.0, _as_float(food.get("weight_g")))
+        if weight_g <= 0:
+            continue
+        usda_id = int(_as_float(food.get("usda_id")))
+        nutrients = _usda_client.get_nutrients(usda_id) if usda_id > 0 else None
+        if not nutrients:
+            continue
+
+        scale = weight_g / 100.0
+        totals["portion_g"] += weight_g
+        totals["protein"] += _as_float(nutrients.get("protein")) * scale
+        totals["fiber"] += _as_float(nutrients.get("fiber")) * scale
+        totals["sodium"] += _as_float(nutrients.get("sodium")) * scale
+        totals["sat_fat"] += _as_float(nutrients.get("sat_fat")) * scale
+        totals["sugar"] += _as_float(nutrients.get("sugar")) * scale
+        totals["total_fat"] += _as_float(nutrients.get("total_fat")) * scale
+        totals["calories"] += _as_float(nutrients.get("calories")) * scale
+    return totals
+
+
+def score_meal_usda(
+    foods: list[dict],  # [{usda_id, weight_g}, ...]
+    meal_type: str,
+) -> tuple[int, str]:
+    """
+    Deterministic USDA-only meal quality score.
+    Returns (meal_quality_0_100, explanation).
+    """
+    cache_key = _meal_score_cache_key(foods, meal_type)
+    if _mongo_db is not None:
+        try:
+            cached = _mongo_db.get_meal_score(cache_key)
+            if cached is not None:
+                cached_score, cached_note = cached
+                return int(cached_score), str(cached_note)
+        except Exception as exc:
+            log.warning(f"meal_score cache read failed: {exc}")
+
+    totals = _build_meal_totals(foods)
+    if totals["portion_g"] <= 0:
+        return 50, "No USDA nutrients found; meal quality set to neutral baseline."
+
+    score = 50.0
+    notes: list[str] = []
+
+    protein = totals["protein"]
+    fiber = totals["fiber"]
+    sodium = totals["sodium"]
+    sat_fat = totals["sat_fat"]
+    sugar = totals["sugar"]
+    total_fat = totals["total_fat"]
+    calories = totals["calories"]
+
+    if protein >= 25:
+        score += 14; notes.append("high_protein")
+    elif protein >= 12:
+        score += 8; notes.append("moderate_protein")
+
+    if fiber >= 10:
+        score += 12; notes.append("high_fiber")
+    elif fiber >= 5:
+        score += 6; notes.append("moderate_fiber")
+
+    if sodium >= 1200:
+        score -= 14; notes.append("very_high_sodium")
+    elif sodium >= 700:
+        score -= 8; notes.append("high_sodium")
+
+    if sat_fat >= 10:
+        score -= 12; notes.append("high_saturated_fat")
+    elif sat_fat >= 5:
+        score -= 6; notes.append("moderate_saturated_fat")
+
+    if sugar >= 20:
+        score -= 12; notes.append("high_sugar")
+    elif sugar >= 10:
+        score -= 6; notes.append("moderate_sugar")
+
+    if total_fat >= 35:
+        score -= 8; notes.append("high_total_fat")
+    if calories >= 900:
+        score -= 8; notes.append("high_calorie_load")
+
+    meal_mult = _MEAL_MULTIPLIER.get(meal_type, 1.0)
+    centered = score - 50.0
+    score = 50.0 + (centered / meal_mult)
+
+    quality = int(max(0, min(100, round(score))))
+    note = (
+        f"USDA-only meal quality from nutrients "
+        f"(protein={protein:.1f}g, fiber={fiber:.1f}g, sodium={sodium:.0f}mg, "
+        f"sat_fat={sat_fat:.1f}g, sugar={sugar:.1f}g). Factors: {', '.join(notes) or 'neutral'}."
+    )
+
+    if _mongo_db is not None:
+        try:
+            _mongo_db.set_meal_score(cache_key, quality, note)
+        except Exception as exc:
+            log.warning(f"meal_score cache write failed: {exc}")
+
+    return quality, note
+
+
+_SYMPTOM_NOTE_KEYWORDS: dict[str, int] = {
+    "bleeding": 9,
+    "blood": 9,
+    "vomit": 7,
+    "vomiting": 7,
+    "dehydration": 6,
+    "severe pain": 6,
+    "urgent diarrhea": 6,
+    "faint": 5,
+    "fever": 4,
+    "cramp": 3,
+    "nausea": 3,
+}
+
+
+def score_symptom_log_rules(
+    symptoms: list[str],
+    severity: str,
+    note: Optional[str] = None,
+) -> tuple[int, str]:
+    """
+    Deterministic penalty based on symptom count, severity, and note keywords.
+    Returns (penalty_0_to_40, explanation).
+    """
+    severity_base = {"Mild": 4, "Moderate": 9, "Severe": 15}.get(severity, 8)
+    symptom_bonus = min(14, max(0, len(symptoms) - 1) * 2)
+    keyword_bonus = 0
+
+    note_lower = (note or "").lower()
+    matched: list[str] = []
+    for key, value in _SYMPTOM_NOTE_KEYWORDS.items():
+        if key in note_lower:
+            keyword_bonus += value
+            matched.append(key)
+
+    penalty = max(0, min(40, severity_base + symptom_bonus + min(12, keyword_bonus)))
+    top = symptoms[0] if symptoms else "symptom"
+    details = ", ".join(matched) if matched else "none"
+    reason = (
+        f"Rule-based penalty from severity={severity}, symptoms={len(symptoms)}, "
+        f"note_keywords={details}. Applied {penalty} points for {top.lower()} profile."
+    )
+    return penalty, reason
 
 
 def score_meal_claude(

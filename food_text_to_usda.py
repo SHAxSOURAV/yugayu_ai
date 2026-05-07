@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Optional
 
 from text_context_parser import utc_now_iso
@@ -56,12 +57,21 @@ def init(claude_client, usda_client, mongo_db=None) -> None:
 # Cache key helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _light_normalise_text(text: str) -> str:
+    norm = text.lower().strip()
+    norm = re.sub(r"[^\w\s]", " ", norm)
+    norm = re.sub(r"\b(had\s+eaten|had\s+eat|ate)\b", "eat", norm)
+    norm = re.sub(r"\bfried\b", "fry", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    return norm
+
+
 def _cache_key(text: str) -> str:
     """
     SHA-256 of the lowercased, whitespace-normalised input text.
     Ensures 'Chicken Biryani 400g' and 'chicken biryani 400g' share one cache entry.
     """
-    normalised = " ".join(text.lower().split())
+    normalised = _light_normalise_text(text)
     return hashlib.sha256(normalised.encode()).hexdigest()
 
 

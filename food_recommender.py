@@ -381,6 +381,29 @@ def recommend_safe_from_logs(
     return result[:n]
 
 
+def safe_history_foods_only(
+    food_logs_named: list[dict],
+    symptom_logs: list[dict],
+) -> list[str]:
+    """
+    Return only safe-history foods (no curated fillers).
+    Safe-history means foods never seen in any symptom digestion window.
+    """
+    if not food_logs_named:
+        return []
+    grouped = group_composite_meals(food_logs_named)
+    symptom_names = list(dict.fromkeys(
+        s.get("symptom", "") for s in symptom_logs if s.get("symptom")
+    ))
+    suspect = _find_suspect_foods(grouped, symptom_logs)
+    return _safe_history_foods_ranked(
+        grouped_meals=grouped,
+        suspect_foods=suspect,
+        symptom_names=symptom_names,
+        food_logs_named=food_logs_named,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public: recommend_safe_foods  (Claude-based, unchanged)
 # Used by other endpoints with user_memory personalisation.

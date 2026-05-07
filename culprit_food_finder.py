@@ -83,9 +83,9 @@ def find_culprit_foods(
 ) -> CulpritResult:
 
     if not symptom_logs:
-        return CulpritResult([], "No symptom logs found.", 0, len(food_logs))
+        return CulpritResult([], "You do not have any symptom logs.", 0, len(food_logs))
     if not food_logs:
-        return CulpritResult([], "No food logs found.", len(symptom_logs), 0)
+        return CulpritResult([], "You do not have any food logs.", len(symptom_logs), 0)
 
     # Collect all food×symptom pairs to score in one batched Claude call
     acc: dict[tuple, dict] = defaultdict(lambda: {
@@ -128,7 +128,7 @@ def find_culprit_foods(
 
     if not pending_pairs:
         return CulpritResult(
-            [], "No food eaten within digestion windows before any symptom.",
+            [], "No food was eaten within digestion windows before any symptom.",
             symptom_events_used, len(food_logs),
         )
 
@@ -153,7 +153,7 @@ def find_culprit_foods(
 
     if not acc:
         return CulpritResult(
-            [], "No food eaten within digestion windows before any symptom.",
+            [], "No food was eaten within digestion windows before any symptom.",
             symptom_events_used, len(food_logs),
         )
 
@@ -188,8 +188,6 @@ def find_culprit_foods(
         method_summary=(
             f"Analysed {n_f} food logs and {n_s} symptom logs. "
             f"{symptom_events_used} symptom event(s) had temporally matching food entries. "
-            f"Scored using Claude AI NLI, weighted by severity. "
-            f"Returned top {len(culprit_foods)} food(s) by aggregate score."
         ),
         symptom_events_used=symptom_events_used,
         food_events_scanned=n_f,
