@@ -2232,13 +2232,15 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
             food_time, fl = foods_sorted[i]
             delta_minutes = (sym_time - food_time).total_seconds() / 60.0
             if win_min <= delta_minutes <= win_max:
+                original_name = fl.get("display_name") or fl.get("food_name", "Unknown food")
                 candidates.append({
                     "symptom": symptom,
                     "intensity": intensity,
                     "window_min": win_min,
                     "window_max": win_max,
                     "usda_id": fl.get("usda_id", 0),
-                    "food_name": fl.get("display_name") or fl.get("food_name", "Unknown food"),
+                    "food_name": original_name,
+                    "original_food_name": original_name,
                     "weight_g": fl.get("weight_g", 0),
                     "logged_at": food_time,
                     "hours_before": round(delta_minutes / 60.0, 2),
@@ -2287,6 +2289,7 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
     for c in candidates:
         uid       = c["usda_id"]
         food_name = name_cache.get(uid, c["food_name"]) or "Unknown food"
+        original_food_name = c.get("original_food_name", c["food_name"])
         weight_g  = c["weight_g"]
         symptom   = c["symptom"]
         sev_mult  = {"Mild": 0.9, "Moderate": 1.0, "Severe": 1.15}.get(c["intensity"], 1.0)
@@ -2320,6 +2323,7 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
         scored_raw.append({
             "usda_id": uid,
             "food_name": food_name,
+            "original_food_name": original_food_name,
             "weight_g": weight_g,
             "hours_before": c["hours_before"],
             "nutrient_risk": round(n_risk, 4),
@@ -2336,6 +2340,7 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
             merged[key] = {
                 "usda_id": r["usda_id"],
                 "food_name": r["food_name"],
+                "original_food_name": r.get("original_food_name", r["food_name"]),
                 "weight_g": r["weight_g"],
                 "hours_before": r["hours_before"],
                 "nutrient_risk_sum": 0.0,
@@ -2354,6 +2359,7 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
         m["risk_nutrients"].update(r["risk_nutrients"])
 
     scored: list[CulpritFoodDetail] = []
+    original_names_map: dict[str, str] = {}  # Map USDA name -> original name
     for m in merged.values():
         cnt = max(1, m["count"])
         combined = round(m["combined_risk_sum"] / cnt, 4)
@@ -2368,12 +2374,16 @@ def symptom_culprit(req: SymptomCulpritRequest) -> SymptomCulpritResponse:
             risk_level    = _risk_level_label(combined),
             risk_nutrients= sorted(m["risk_nutrients"]),
         ))
+        # Track original food name for message generation
+        original_names_map[m["food_name"]] = m.get("original_food_name", m["food_name"])
 
     scored.sort(key=lambda x: x.combined_risk, reverse=True)
 
     culprit_ids = [d.usda_id for d in scored]
 
-    associated = _natural_join(list(dict.fromkeys(d.food_name for d in scored)))
+    # Use original food names in message, not normalized USDA names
+    original_names = [original_names_map.get(d.food_name, d.food_name) for d in scored]
+    associated = _natural_join(list(dict.fromkeys(original_names)))
     message = f"{associated} is associated with {symptom.lower()}."
 
     response_payload = {
