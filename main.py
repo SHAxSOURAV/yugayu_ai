@@ -309,7 +309,7 @@ def _mk_mock_log_food(req):
     from main import FoodLogResponse, FoodLogItem  # forward-ref; use local names below
     return {
         "updated_score":    max(40, min(99, req.current_score + 3)),
-        "food_score":       15,  # 15/100 (good)
+        "food_score":       85,  # 85/100 (good)
         "food_detected":    2,
         "logged_at":        utc_now_iso(),
         "normalised_names": ["Chicken", "Rice"],
@@ -340,7 +340,7 @@ def _mk_mock_food_parse(req):
             {"normalised_name": "Broccoli", "usda_id": 169967, "weight_g": 100.0},
         ],
         "meal_type":    "Lunch",
-        "food_score":   12,  # 12/100 (good)
+        "food_score":   88,  # 88/100 (good)
         "score_impact": 3  if req.current_score is not None else None,
         "updated_score": max(40, min(99, (req.current_score or 70) + 3))
                          if req.current_score is not None else None,
@@ -624,7 +624,7 @@ class FoodLogItem(BaseModel):
 
 class FoodLogResponse(BaseModel):
     updated_score:        int
-    food_score:           int = Field(..., description="Gut stress score (0-100). Lower is better.")
+    food_score:           int = Field(..., description="Meal quality score (0-100). Higher is better.")
     food_detected:        int
     logged_at:            str
     normalised_names:     List[str]
@@ -695,8 +695,8 @@ def log_food(req: FoodLogRequest) -> FoodLogResponse:
 
     # ── Step 3: blend current score with USDA meal quality ───────────────────
     updated_score = _blend_with_meal_quality(req.current_score, meal_quality)
-    # food_score is the inverse of quality (0=perfect, 100=toxic)
-    food_score = 100 - meal_quality
+    # food_score is the quality (0=toxic, 100=perfect)
+    food_score = meal_quality
 
     # ── Step 4: composite food detection + cache ──────────────────────────────
     # All items from one parse call share the same logged_at — if there are 2+
@@ -860,7 +860,7 @@ class FoodParseResponse(BaseModel):
     normalised_names:      List[str]
     results:               List[FoodParseItem]
     meal_type:             Optional[str] = None
-    food_score:            Optional[int] = Field(None, description="Gut stress score (0-100). Lower is better.")
+    food_score:            Optional[int] = Field(None, description="Meal quality score (0-100). Higher is better.")
     score_impact:          Optional[int] = None
     updated_score:         Optional[int] = None
     users_given_food_name: Optional[str] = None
@@ -899,9 +899,9 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
 
     score_impact:  Optional[int] = None
     updated_score: Optional[int] = None
+    food_score:    Optional[int] = None
 
-    food_score: Optional[int] = None
-    if req.current_score is not None and _state.nutrition_ready:
+    if _state.nutrition_ready:
         try:
             import nutrition_scorer as _ns
             foods_for_scoring = [
@@ -912,9 +912,11 @@ def food_parse(req: FoodParseRequest) -> FoodParseResponse:
                 foods=foods_for_scoring,
                 meal_type=meal_type or "Lunch",
             )
-            updated_score = _blend_with_meal_quality(req.current_score, meal_quality)
-            score_impact = updated_score - req.current_score
-            food_score = 100 - meal_quality
+            food_score = meal_quality
+
+            if req.current_score is not None:
+                updated_score = _blend_with_meal_quality(req.current_score, meal_quality)
+                score_impact = updated_score - req.current_score
         except Exception as exc:
             log.warning(f"food/parse scoring failed: {exc}")
 
