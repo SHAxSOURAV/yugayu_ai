@@ -1455,11 +1455,11 @@ class FoodAnalysisRequest(BaseModel):
 
 class SafeFoodRequest(BaseModel):
     food_logs:    List[FoodNameLogInput] = Field(
-        ..., min_length=1,
+        default_factory=list,
         description="Food entries (food_name + weight_g + logged_at)",
     )
     symptom_logs: List[SymptomLogInput] = Field(default_factory=list)
-    n:            int = Field(default=5, ge=1, le=10)
+    n:            int = Field(default=5, ge=1, le=20)
  
  
 class SafeFoodResponse(BaseModel):
@@ -1506,7 +1506,7 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
     cached_payload = _endpoint_cache_get(cache_key)
     if cached_payload is not None:
         return SafeFoodResponse(**cached_payload)
-
+ 
     mongo_db = getattr(_state, "_mongo_db", None)
     food_logs_named = _expand_food_name_logs_batch(req.food_logs, mongo_db)
  
@@ -1523,36 +1523,34 @@ def recommend_safe_foods_endpoint(req: SafeFoodRequest) -> SafeFoodResponse:
     grouped       = group_composite_meals(food_logs_named)
     composite_cnt = sum(1 for m in grouped if m["is_composite"])
  
-    safe_history_only = safe_history_foods_only(
-        food_logs_named=food_logs_named,
-        symptom_logs=symptom_logs_plain,
-    )
-    enough_data = len(safe_history_only) >= 10
-
-    # ── Top-10 safe foods when enough data; otherwise fallback existing setup ─
+    # ── History-only safe foods (count < 3 associations) ───────────────────────
     try:
-        if enough_data:
-            safe_foods = safe_history_only[:10]
-        else:
-            safe_foods = recommend_safe_from_logs(
-                food_logs_named=food_logs_named,
-                symptom_logs=symptom_logs_plain,
-                n=req.n,
-            )
+        # Respect user's n, cap at 20
+        n_limit = min(req.n, 20)
+        safe_foods = recommend_safe_from_logs(
+            food_logs_named=food_logs_named,
+            symptom_logs=symptom_logs_plain,
+            n=n_limit,
+        )
     except Exception as exc:
         log.exception("recommend/safe-foods — recommendation failed")
         raise HTTPException(500, f"Recommendation error: {exc}")
- 
-    if not safe_foods:
-        raise HTTPException(404, "No safe food recommendations could be generated.")
- 
-    source_note = (
-        "Recommendations based on temporal window analysis and nutrient risk scoring. "
-        "Safe history foods are returned first (foods never eaten before a symptom); "
-        "remaining slots are filled from a curated gut-friendly list filtered to your symptoms."
-        + (f" {composite_cnt} composite meal(s) detected and grouped." if composite_cnt else "")
-    )
- 
+
+    # ── Source Note Logic ─────────────────────────────────────────────────────
+    # User requirements:
+    # 1. if no food log: "You dont have enough logs, add more food and symptom to find safe food."
+    # 2. if safe food list < 5: "add more food and symptom logs to find more safe food."
+    # 3. else: default note
+    if not req.food_logs:
+        source_note = "You dont have enough logs, add more food and symptom to find safe food."
+    elif len(safe_foods) < 5:
+        source_note = "add more food and symptom logs to find more safe food."
+    else:
+        source_note = (
+            "Recommendations based on foods logged at least 3 times with zero symptom associations."
+            + (f" {composite_cnt} composite meal(s) detected." if composite_cnt else "")
+        )
+
     response_payload = {
         "safe_foods": safe_foods,
         "foods_analysed": len(req.food_logs),
@@ -1621,7 +1619,7 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
     cached_payload = _endpoint_cache_get(cache_key)
     if cached_payload is not None:
         return FoodSymptomPredictResponse(**cached_payload)
-
+ 
     # ── Resolve food_name inputs (supports sentence-style meal text) ─────────
     mongo_db = getattr(_state, "_mongo_db", None)
     food_logs_named = _expand_food_name_logs_batch(req.food_logs, mongo_db)
@@ -1659,7 +1657,7 @@ def predict_food_symptom(req: FoodSymptomPredictRequest) -> FoodSymptomPredictRe
     _endpoint_cache_set(cache_key, response_payload)
     return FoodSymptomPredictResponse(**response_payload)
  
-
+ 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENDPOINT — POST /recommend/triggers_food
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2452,14 +2450,14 @@ def _compute_food_note_severity(top_sym: str, x: int, pct: float) -> str:
 
     Rules (applied in order):
       1. Fatigue symptom        → always "Low"
-      2. x < 3 occurrences     → "Early Signal - Log more to confirm"
+      2. x < 4 occurrences     → "Early Signal - Log more to confirm"
       3. pct < 40%             → "Low"
       4. 40% <= pct < 70%      → "Medium"
       5. pct >= 70%            → "High"
     """
     if top_sym.lower() == "fatigue":
         return "Low"
-    if x < 3:
+    if x < 4:
         return "Early Signal - Log more to confirm"
     if pct < 40.0:
         return "Low"
@@ -2564,29 +2562,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
         )
 
     # ── Request-level cache (fast replay) ─────────────────────────────────
-    # endpoint_cache_key = _request_cache_key(
-    #     "recommend_food_note|",
-    #     {
-    #         "target": _light_normalise_text(target),
-    #         "food_logs": [
-    #             {
-    #                 "food_name": _light_normalise_text(fl.food_name),
-    #                 "weight_g": round(float(fl.weight_g), 2),
-    #                 "logged_at": fl.logged_at.isoformat(),
-    #             }
-    #             for fl in req.food_logs
-    #         ],
-    #         "symptom_logs": [
-    #             {
-    #                 "symptom": sl.symptom.strip(),
-    #                 "intensity": _normalise_intensity(sl.intensity),
-    #                 "logged_at": sl.logged_at.isoformat(),
-    #             }
-    #             for sl in req.symptom_logs
-    #         ],
-    #     },
-    # )
-
     endpoint_cache_key = _request_cache_key(
         "recommend_food_note|" + _light_normalise_text(target),
         req.food_logs,
@@ -2629,109 +2604,6 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     date_end    = timestamps[-1]
     delta_days  = max(1, (date_end - date_start).days)
     days_label  = f"{delta_days} day{'s' if delta_days != 1 else ''}"
-
-    # (symptom_logs missing handled by fast early return above)
-
-    #     # Build cache key: target_usda + frequency bucket + days bucket
-    #     # days_label is baked into the note so it must be part of the key
-    #     freq_bucket  = target_count // 5
-    #     days_bucket  = delta_days // 7   # bucket per week so nearby dates share cache
-    #     note_key_raw = f"no_symptoms|{target_usda_id or target_low}|freq={freq_bucket}|d={days_bucket}"
-    #     note_cache_key = hashlib.sha256(note_key_raw.encode()).hexdigest()
-
-    #     if mongo_db is not None:
-    #         try:
-    #             cached_note = mongo_db.get_food_note(note_cache_key)
-    #             if cached_note:
-    #                 return FoodNoteResponse(
-    #                     target_food = target,
-    #                     case        = "no_symptoms",
-    #                     severity    = "Early Signal - Log more to confirm",
-    #                     note        = cached_note,
-    #                     cached      = True,
-    #                 )
-    #         except Exception as exc:
-    #             log.warning(f"food_note cache read failed: {exc}")
-
-    #     # Get food category tag (reuses food_tag_classifier)
-    #     category = "food"
-    #     if target_usda_id:
-    #         try:
-    #             from food_tag_classifier import classify_food_tags
-    #             tag_result = classify_food_tags(target_usda_id)
-    #             category   = tag_result.primary_tag
-    #         except Exception:
-    #             pass
-
-    #     # Get top likely symptom via _nutrient_risk at 100g
-    #     top_symptom = "digestive discomfort"
-    #     if target_usda_id and _state.usda_ready:
-    #         try:
-    #             from food_symptom_predictor import NutrientSnapshot, _nutrient_risk
-    #             usda_data = _state.usda_client.get_nutrients(target_usda_id)
-    #             if usda_data:
-    #                 def _sv(k):
-    #                     v = usda_data.get(k)
-    #                     return round(float(v), 3) if v is not None else None
-    #                 nutrients = NutrientSnapshot(
-    #                     description  = target_usda_desc or target,
-    #                     calories     = _sv("calories"),   protein  = _sv("protein"),
-    #                     total_fat    = _sv("total_fat"),  carbs    = _sv("carbs"),
-    #                     sodium       = _sv("sodium"),     sat_fat  = _sv("sat_fat"),
-    #                     cholesterol  = _sv("cholesterol"),sugar    = _sv("sugar"),
-    #                     portion_g    = 100.0,
-    #                 )
-    #                 symptom_list = [
-    #                     "Heartburn","Bloating","Gas","Nausea","Abdominal Pain",
-    #                     "Cramps","Diarrhea","Constipation","Fatigue","Acid Reflux",
-    #                 ]
-    #                 scored = [
-    #                     (sym, _nutrient_risk(nutrients, sym)[0])
-    #                     for sym in symptom_list
-    #                 ]
-    #                 scored.sort(key=lambda x: x[1], reverse=True)
-    #                 if scored[0][1] > 0.10:
-    #                     top_symptom = scored[0][0]
-    #         except Exception:
-    #             pass
-
-    #     # # Claude Haiku — one sentence, 15-18 words
-    #     # summary = (
-    #     #     f"Food: {target} (category: {category}). "
-    #     #     f"Eaten {target_count} times in {days_label}. "
-    #     #     f"Top likely gut symptom based on nutrients: {top_symptom}. "
-    #     #     f"No symptoms have been logged yet by this user."
-    #     # )
-
-    #     note = (
-    #         f"You haven't logged any symptoms yet, log symptoms to see if they're related to {target}."
-    #     )
-
-    #     # if _state.claude_client is not None:
-    #     #     try:
-    #     #         msg = _state.claude_client.messages.create(
-    #     #             model      = "claude-haiku-4-5-20251001",
-    #     #             max_tokens = 60,
-    #     #             system     = _FOOD_NOTE_NO_SYMPTOMS_SYSTEM,
-    #     #             messages   = [{"role": "user", "content": summary}],
-    #     #         )
-    #     #         note = msg.content[0].text.strip().strip('"')
-    #     #     except Exception as exc:
-    #     #         log.warning(f"food_note Claude call failed: {exc}")
-
-    #     if mongo_db is not None:
-    #         try:
-    #             mongo_db.set_food_note(note_cache_key, note)
-    #         except Exception as exc:
-    #             log.warning(f"food_note cache write failed: {exc}")
-
-    #     return FoodNoteResponse(
-    #         target_food = target,
-    #         case        = "no_symptoms",
-    #         severity    = "Early Signal - Log more to confirm",
-    #         note        = note,
-    #         cached      = False,
-    #     )
 
     # ── CASE 1: food_logs + symptom_logs present ──────────────────────────────
 
@@ -2805,6 +2677,11 @@ def recommend_food_note(req: FoodNoteRequest) -> FoodNoteResponse:
     if x == 0:
         note = (
             f"'{target}' was not linked to any symptoms in {days_label}."
+        )
+    elif x < 4:
+        note = (
+            f"Early signal: '{target}' appeared before {top_sym} {x} out of {y} times "
+            f"({pct}%). Log more meals and symptoms to confirm this pattern."
         )
     else:
         time_part = f", within {avg_time_str}" if avg_time_str else ""

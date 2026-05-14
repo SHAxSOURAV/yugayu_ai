@@ -234,27 +234,34 @@ def _nutrient_danger_score(usda_id: int, symptom_names: list[str]) -> float:
 def _find_suspect_foods(
     grouped_meals: list[dict],
     symptom_logs:  list[dict],
+    threshold: int = 3,
 ) -> set[str]:
     """
-    Return the set of food names that were eaten within at least one
-    symptom's digestion window (i.e. potentially caused a symptom).
+    Return the set of food names that were eaten within a symptom's 
+    digestion window at least 'threshold' times.
     """
-    suspect: set[str] = set()
+    counts: dict[str, int] = {}
+    
     for s in symptom_logs:
         symptom  = s.get("symptom", "")
         sym_time = _pdt(s["logged_at"])
         wmin, wmax = _DIGESTION_WINDOWS_H.get(symptom, _DEFAULT_WINDOW_H)
 
+        # Track which foods were eaten before THIS specific symptom event
+        seen_in_event: set[str] = set()
         for m in grouped_meals:
             ft = _pdt(m["logged_at"])
             if ft >= sym_time:
                 continue
             h = (sym_time - ft).total_seconds() / 3600.0
             if wmin <= h <= wmax:
-                # Mark all individual components as suspect
                 for comp in m.get("components", [m["food_name"]]):
-                    suspect.add(comp)
-    return suspect
+                    seen_in_event.add(comp)
+        
+        for food in seen_in_event:
+            counts[food] = counts.get(food, 0) + 1
+
+    return {f for f, c in counts.items() if c >= 1}
 
 
 def _safe_history_foods_ranked(
@@ -292,8 +299,7 @@ def _safe_history_foods_ranked(
             comps = meal.get("components", [])
             if all(c not in suspect_foods for c in comps):
                 meal_name = meal["food_name"]
-                if meal_name not in safe_name_counts:
-                    safe_name_counts[meal_name] = 1
+                safe_name_counts[meal_name] = safe_name_counts.get(meal_name, 0) + 1
 
     # Score each safe food: lower danger score + higher frequency = better
     def _rank_key(name: str) -> float:
@@ -303,7 +309,13 @@ def _safe_history_foods_ranked(
         # Lower danger = higher rank, higher frequency = higher rank
         return danger - 0.05 * frequency
 
-    ranked = sorted(safe_name_counts.keys(), key=_rank_key)
+    # Filter: Only include foods logged at least 3 times
+    safe_history = [name for name, count in safe_name_counts.items() if count >= 3]
+
+    if not safe_history:
+        return []
+
+    ranked = sorted(safe_history, key=_rank_key)
     return ranked
 
 
@@ -317,39 +329,21 @@ def recommend_safe_from_logs(
     n:               int = 5,
 ) -> list[str]:
     """
-    Identify n safe foods for this user — no Claude API, no additional cost.
-
-    Parameters
-    ----------
-    food_logs_named : list[dict]  — {food_name, weight_g, logged_at[, usda_id]}
-    symptom_logs    : list[dict]  — {symptom, intensity, logged_at}
-    n               : int         — number of recommendations to return
-
-    Returns
-    -------
-    list[str]
-        Up to n food names.  Safe history foods are listed first (ranked by
-        safety); new gut-friendly suggestions fill any remaining slots.
-
-    Logic
-    ─────
-    Step 1 — Identify SUSPECT foods (eaten within any symptom's digestion window)
-    Step 2 — SAFE history foods = logged foods never in any symptom window
-    Step 3 — Rank safe history foods by nutrient danger score (low = safe)
-    Step 4 — Fill remaining slots with curated gut-friendly foods (symptom-aware)
+    Identify n safe foods for this user based ONLY on history.
+    No curated fallback foods.
+    
+    A food is safe if it has ZERO associations and has been logged at least 3 times.
     """
     if not food_logs_named:
-        log.info("recommend_safe_from_logs: no food logs — returning curated list only.")
-        symptom_names = [s.get("symptom", "") for s in symptom_logs if s.get("symptom")]
-        return _curated_safe_list(symptom_names, set(), n)
+        return []
 
     grouped       = group_composite_meals(food_logs_named)
     symptom_names = list(dict.fromkeys(
         s.get("symptom", "") for s in symptom_logs if s.get("symptom")
     ))
 
-    # ── Step 1: find suspect foods ────────────────────────────────────────────
-    suspect = _find_suspect_foods(grouped, symptom_logs)
+    # ── Step 1: find suspect foods (any association >= 1 makes it unsafe) ─────
+    suspect = _find_suspect_foods(grouped, symptom_logs, threshold=1)
 
     # ── Step 2 & 3: rank safe history foods ───────────────────────────────────
     safe_history = _safe_history_foods_ranked(
@@ -359,26 +353,13 @@ def recommend_safe_from_logs(
         food_logs_named = food_logs_named,
     )
 
-    # ── Step 4: fill remaining slots from curated list ────────────────────────
-    result: list[str] = safe_history[:n]
-
-    if len(result) < n:
-        all_seen = set(safe_history) | suspect
-        extras = _curated_safe_list(
-            symptom_names = symptom_names,
-            exclude_names = all_seen,
-            n             = n - len(result),
-        )
-        result.extend(extras)
-
     log.info(
-        f"recommend_safe_from_logs (logic): "
-        f"{len(safe_history[:n])} from history + "
-        f"{max(0, len(result) - len(safe_history[:n]))} curated fillers = "
-        f"{len(result)} total. "
-        f"Suspect foods excluded: {len(suspect)}."
+        f"recommend_safe_from_logs (history-only): "
+        f"Found {len(safe_history)} safe foods. Returning top {n}. "
+        f"Found {len(safe_history)} safe foods. Returning top {n}. "
+        f"Suspect foods (count>=1): {len(suspect)}."
     )
-    return result[:n]
+    return safe_history[:n]
 
 
 def safe_history_foods_only(
@@ -386,8 +367,8 @@ def safe_history_foods_only(
     symptom_logs: list[dict],
 ) -> list[str]:
     """
-    Return only safe-history foods (no curated fillers).
-    Safe-history means foods never seen in any symptom digestion window.
+    Return only safe-history foods.
+    Safe-history means foods with zero associations and logged at least 3 times.
     """
     if not food_logs_named:
         return []
@@ -395,7 +376,7 @@ def safe_history_foods_only(
     symptom_names = list(dict.fromkeys(
         s.get("symptom", "") for s in symptom_logs if s.get("symptom")
     ))
-    suspect = _find_suspect_foods(grouped, symptom_logs)
+    suspect = _find_suspect_foods(grouped, symptom_logs, threshold=1)
     return _safe_history_foods_ranked(
         grouped_meals=grouped,
         suspect_foods=suspect,
