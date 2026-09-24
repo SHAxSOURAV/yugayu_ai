@@ -1,6 +1,102 @@
-.venv/
-data/db/
+# ── Python bytecode & cache ──────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ── Virtual Environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ── Packaging & Distribution ─────────────────────────────────────────────────
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── Testing, Coverage & Profiling ────────────────────────────────────────────
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+htmlcov/
+
+# ── Linters, Typecheckers & Formatters ───────────────────────────────────────
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ── Databases & Local storage ────────────────────────────────────────────────
+data/db/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Environment & Secrets ────────────────────────────────────────────────────
 .env
+.env.*
 .env.example
+*.env
+*.env.local
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+
+# ── OS Generated Files ───────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# ── IDEs & Text Editors ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# ── Cloud Sync Conflicts & Duplicates (OneDrive / Google Drive) ──────────────
+* (1).*
+* (2).*
+* (3).*
+* (4).*
+* (5).*
+* (1)
+* (2)
+* (3)
+* (4)
+* (5)
+* - Copy.*
+* - Copy
+* (Conflict*).*
