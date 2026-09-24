@@ -59,7 +59,7 @@ data/db/
 # ── Environment & Secrets ────────────────────────────────────────────────────
 .env
 .env.*
-.env.example
+!.env.example
 *.env
 *.env.local
 
@@ -78,7 +78,6 @@ Thumbs.db
 $RECYCLE.BIN/
 
 # ── IDEs & Text Editors ──────────────────────────────────────────────────────
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -100,3 +99,7 @@ $RECYCLE.BIN/
 * - Copy.*
 * - Copy
 * (Conflict*).*
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
